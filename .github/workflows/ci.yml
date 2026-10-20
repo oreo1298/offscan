@@ -47,3 +47,33 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           OFFSCAN_QT_API: pyqt6
+
+  integration:
+    # Root, loop devices, device-mapper and real filesystems.  Proves that
+    # target images are byte-for-byte unchanged after list/probe/unlock/mount.
+    runs-on: ubuntu-24.04
+    env:
+      BITLK_COMMIT: 102e91cb0fee849bb86fb1ec4d6ea218e45563cd
+      BITLK_SHA256: 68bf5669f777668112d497234ebe2166b5feaf0e33b206b095b917f82937bd30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Filesystem and crypto tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ntfs-3g xfsprogs btrfs-progs cryptsetup-bin lvm2 \
+            dosfstools exfatprogs fdisk dislocker "linux-modules-extra-$(uname -r)" || \
+          sudo apt-get install -y -q ntfs-3g xfsprogs btrfs-progs cryptsetup-bin lvm2 dosfstools exfatprogs fdisk
+      - name: BitLocker test images (from cryptsetup's test suite)
+        run: |
+          curl -fsSL -o bitlk.tar.xz \
+            "https://raw.githubusercontent.com/mbroz/cryptsetup/${BITLK_COMMIT}/tests/bitlk-images.tar.xz"
+          echo "${BITLK_SHA256}  bitlk.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bitlk" && tar -xJf bitlk.tar.xz -C "$RUNNER_TEMP/bitlk"
+      - run: pip install -e ".[dev]"
+      - name: Integration tests (as root)
+        run: |
+          sudo -E env "PATH=$PATH" "OFFSCAN_TEST_BITLK_DIR=$RUNNER_TEMP/bitlk/bitlk-images" \
+            "$(which python)" -m pytest -m integration -v -p no:cacheprovider
