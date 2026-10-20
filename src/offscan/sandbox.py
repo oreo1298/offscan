@@ -1,8 +1,8 @@
 """Run parsers of hostile data in an unprivileged, resource-limited child.
 
 The root helper opens target files itself (safely, read-only) and hands
-the file descriptors to a fresh Python process that runs as the invoking
-user (or ``nobody``), with ``no_new_privs``, no network (inherited empty
+the file descriptors to a fresh Python process that runs as the scan
+account (or ``nobody``), with ``no_new_privs``, no network (inherited empty
 namespace), memory/CPU/file-size limits and no core dumps.  The child gets
 a task name from an allow-list, JSON arguments and the fds; it answers with
 one JSON document on stdout.
@@ -19,7 +19,7 @@ import sys
 import time
 from typing import Any
 
-from . import privdrop
+from . import appinfo, privdrop
 
 # task name -> "module:function" (only offscan modules are allowed)
 TASKS: dict[str, str] = {
@@ -58,7 +58,6 @@ def _package_paths() -> list[str]:
     pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(offscan.__file__)))
     out = [pkg_parent]
     # Vendored wheels (yara-x, regipy) live next to the installed package.
-    from . import appinfo
     if os.path.isdir(appinfo.VENDOR_DIR):
         out.append(appinfo.VENDOR_DIR)
     for entry in sys.path:
@@ -67,6 +66,37 @@ def _package_paths() -> list[str]:
         if entry.endswith("site-packages") and entry.startswith(sys.prefix):
             out.append(entry)
     return out
+
+
+_PROBE = (
+    "import json,sys\n"
+    "sys.path[:0]=json.loads(sys.argv[1])\n"
+    "import offscan\n"
+)
+
+
+def import_problem(ident: privdrop.Identity | None) -> str | None:
+    """Why ``ident`` cannot load the package, if that is why its processes fail.
+
+    Installed copies are readable by everyone; a source checkout in a private
+    home directory is not, and the scan account is never the desktop user.
+    """
+    if ident is None or os.geteuid() != 0:
+        return None
+    paths = _package_paths()
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    try:
+        proc = subprocess.run([sys.executable, "-I", "-c", _PROBE, json.dumps(paths)],
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=60, cwd="/", env=env,
+                              user=ident.uid, group=ident.gid, extra_groups=[])
+    except OSError as exc:
+        return f"the {ident.name} account cannot run {sys.executable}: {exc.strerror}"
+    except subprocess.SubprocessError:
+        return None
+    if proc.returncode == 0:
+        return None
+    return (f"the {ident.name} account cannot load {appinfo.NAME} from {paths[0]}. Use an installed "
+            f"copy, or let that account read the source checkout (and the directories above it)")
 
 
 def run(task: str, args: dict[str, Any] | None = None, fds: list[int] | None = None,
@@ -88,6 +118,8 @@ def run(task: str, args: dict[str, Any] | None = None, fds: list[int] | None = N
     except subprocess.TimeoutExpired as exc:
         raise SandboxError(f"sandbox task {task} timed out") from exc
     if proc.returncode != 0:
+        if b"ModuleNotFoundError" in proc.stderr and (problem := import_problem(ident)):
+            raise SandboxError(problem)
         tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-5:]
         raise SandboxError(f"sandbox task {task} failed: {' | '.join(tail) or proc.returncode}")
     try:

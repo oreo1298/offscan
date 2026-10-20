@@ -623,6 +623,16 @@ def test_wheels_are_checked_on_a_private_copy(tmp_path: Path) -> None:
     assert (tmp_path / "private" / entry["file"]).is_file()
 
 
+def test_wheel_links_are_followed_only_in_the_builders_own_directory(tmp_path: Path) -> None:
+    _pkg, entry = build.wheel_entries("x86_64")[0]
+    (tmp_path / "elsewhere").write_bytes(b"x")
+    (tmp_path / entry["file"]).symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(build.BuildError, match="does not match"):     # makepkg's $srcdir
+        build.find_wheels("x86_64", tmp_path)
+    with pytest.raises(build.BuildError, match="is not in"):
+        build.find_wheels("x86_64", tmp_path, copy_to=tmp_path / "private")
+
+
 def test_existing_files_are_not_overwritten(tmp_path: Path, quick_stage: None) -> None:
     target = tmp_path / "root" / "usr" / "bin" / appinfo.NAME
     target.parent.mkdir(parents=True)

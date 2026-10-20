@@ -97,7 +97,7 @@ class WorkerPool:
             raise RuntimeError(self.fatal)
         ready = [w for w in self.workers if w.ready]
         if not ready:
-            raise RuntimeError("no scan worker could start")
+            raise RuntimeError(sandbox.import_problem(self.identity) or "no scan worker could start")
         return ready[0].status
 
     # ------------------------------------------------------------ dispatch

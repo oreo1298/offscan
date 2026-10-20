@@ -237,12 +237,14 @@ def find_wheels(arch: str, directory: Path, download: bool = False,
     """Return name -> verified wheel path; download missing ones if allowed.
 
     With ``copy_to``, each wheel is first copied there and the copy is what is
-    checked and returned (``directory`` may belong to someone else).
+    checked and returned (``directory`` may belong to someone else, so links in
+    it are not followed). Without it, ``directory`` is the builder's own and
+    may hold links (makepkg links its sources into ``$srcdir``).
     """
     found = {}
     for pkg, entry in wheel_entries(arch):
         target = directory / entry["file"]
-        if target.is_file() and not target.is_symlink():
+        if target.is_file() and not (copy_to and target.is_symlink()):
             candidate = _copy_private(target, copy_to) if copy_to else target
             if sha256_file(candidate) == entry["sha256"]:
                 found[pkg["name"]] = candidate

@@ -331,6 +331,12 @@ sudo -E .venv/bin/pytest -m integration           # loop-device images with EICA
 .venv/bin/python -m offscan.gui.app               # the window, from the checkout
 ```
 
+Scanners and parsers run as the `offscan` account (or `nobody`), never as you. The
+integration tests, and a helper run from the checkout with `OFFSCAN_DEV_HELPER=1`, therefore
+need a checkout and a Python that account can read: if your home directory is private,
+work from elsewhere or give the account access (`setfacl -m u:offscan:x ~`, with
+`nobody` in place of `offscan` until the account exists).
+
 Security reports: see [SECURITY.md](SECURITY.md). Tests never use real malware. They use the EICAR test string and generated NTFS and ext4
 images with fake Run keys, a fake cron backdoor and a modified package file. Design notes are
 in [docs/plan.md](docs/plan.md) and [docs/research.md](docs/research.md), and the helper protocol

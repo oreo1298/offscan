@@ -9,9 +9,12 @@ active definition set plus clamd's configuration.
 
 The definition set belongs to the user. When ``owner_uid`` is given (the
 helper, running as root), every file is opened relative to the set's
-directory without following links, must be a regular file owned by that
-user, and must have a plain name: a client cannot make root copy a file the
-user could not read.
+directory without following links, must be a regular file with the set's
+owner, and must have a plain name: a client cannot make root copy a file the
+user could not read. The set may also belong to root (``sudo offscan scan``
+keeps it in root's home). Then every file in it is root's, and its
+directories must not be writable by anyone else, so all of it was chosen by
+root.
 """
 
 from __future__ import annotations
@@ -40,6 +43,15 @@ def _plain_name(name: object) -> str:
     return name
 
 
+def _check_owner(st: os.stat_result, owner_uid: int | None, directory: bool) -> bool:
+    if owner_uid is None:
+        return True
+    if st.st_uid != owner_uid:
+        return False
+    # Nobody else may add links to a root-owned set.
+    return not (directory and owner_uid == 0 and st.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+
+
 def _open_in(dirfd: int, name: str, owner_uid: int | None, directory: bool = False) -> int:
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | (os.O_DIRECTORY if directory else os.O_NONBLOCK)
     try:
@@ -48,7 +60,7 @@ def _open_in(dirfd: int, name: str, owner_uid: int | None, directory: bool = Fal
         raise RuntimeSetupError(f"cannot open {name} in the definition set: {exc.strerror}") from exc
     st = os.fstat(fd)
     ok = stat.S_ISDIR(st.st_mode) if directory else stat.S_ISREG(st.st_mode)
-    if not ok or (owner_uid is not None and st.st_uid != owner_uid):
+    if not ok or not _check_owner(st, owner_uid, directory):
         os.close(fd)
         raise RuntimeSetupError(f"{name} in the definition set is not a "
                             f"{'directory' if directory else 'regular file'} of its owner")
@@ -94,8 +106,12 @@ def prepare(set_dir: Path, options: ScanOptions, scan_uid: int, scan_gid: int,
     runtime = Path(tempfile.mkdtemp(prefix=f"{appinfo.NAME}-scan-", dir=base))
     try:
         st = os.fstat(set_fd)
-        if owner_uid is not None and st.st_uid != owner_uid:
-            raise RuntimeSetupError("the definition set does not belong to the user who started the scan")
+        if owner_uid is not None:
+            if st.st_uid == 0:
+                owner_uid = 0
+            if not _check_owner(st, owner_uid, directory=True):
+                raise RuntimeSetupError("the definition set does not belong to the user who started "
+                                        "the scan, or others can write to it")
         manifest_fd = _open_in(set_fd, layout.MANIFEST, owner_uid)
         with os.fdopen(manifest_fd, "rb") as fh:
             manifest = json.loads(fh.read(64 << 20))

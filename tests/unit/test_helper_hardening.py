@@ -106,8 +106,9 @@ def test_runtime_is_built_only_from_the_users_own_files(tmp_path: Path) -> None:
     rt = runtime.prepare(set_dir, opts, me, os.getegid(), base=str(tmp_path), owner_uid=me)
     assert (rt / "hashes" / "malware.ofh").read_bytes() == b"\0" * 32
     runtime.cleanup(rt)
-    with pytest.raises(runtime.RuntimeSetupError, match="does not belong"):
-        runtime.prepare(set_dir, opts, me, os.getegid(), base=str(tmp_path), owner_uid=me + 1)
+    if me != 0:
+        with pytest.raises(runtime.RuntimeSetupError, match="does not belong"):
+            runtime.prepare(set_dir, opts, me, os.getegid(), base=str(tmp_path), owner_uid=me + 1)
     # A name with a path in it, or a file that is a symbolic link, is refused.
     manifest = json.loads((set_dir / "manifest.json").read_text())
     manifest["hashes"]["malware"] = ["../../../etc/shadow"]
@@ -120,6 +121,70 @@ def test_runtime_is_built_only_from_the_users_own_files(tmp_path: Path) -> None:
     with pytest.raises(runtime.RuntimeSetupError):
         runtime.prepare(set_dir, opts, me, os.getegid(), base=str(tmp_path), owner_uid=me)
     assert not list(tmp_path.glob("*-scan-*"))           # nothing left behind after a refusal
+
+
+def _chown_tree(top: Path, uid: int) -> None:
+    for path in [top, *top.rglob("*")]:
+        os.lchown(path, uid, uid)
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to own files as others")
+def test_a_root_owned_set_must_be_roots_throughout(tmp_path: Path) -> None:
+    from offscan.scan import runtime
+    from offscan.scan.options import ScanOptions
+    opts = ScanOptions(volumes=["x"])
+    set_dir = _definition_set(tmp_path)          # root's own, as with `sudo offscan scan`
+    for d in (tmp_path, set_dir, set_dir / "hashes", set_dir / "yara"):
+        os.chmod(d, 0o755)
+
+    def prepare(owner: int) -> Path:
+        return runtime.prepare(set_dir, opts, 0, 0, base=str(tmp_path), owner_uid=owner)
+
+    runtime.cleanup(prepare(1000))
+    # A file someone else owns (a hard link the user made, say) in root's set.
+    os.chown(set_dir / "hashes" / "malware.ofh", 1000, 1000)
+    with pytest.raises(runtime.RuntimeSetupError, match="of its owner"):
+        prepare(1000)
+    os.chown(set_dir / "hashes" / "malware.ofh", 0, 0)
+    # Directories others can add links to.
+    os.chmod(set_dir, 0o777)
+    with pytest.raises(runtime.RuntimeSetupError, match="others can write"):
+        prepare(1000)
+    os.chmod(set_dir, 0o755)
+    os.chmod(set_dir / "hashes", 0o775)
+    with pytest.raises(runtime.RuntimeSetupError, match="of its owner"):
+        prepare(1000)
+    os.chmod(set_dir / "hashes", 0o755)
+    # The user's set must be the user's throughout; with no known user, only root's sets are used.
+    _chown_tree(set_dir, 1000)
+    runtime.cleanup(prepare(1000))
+    with pytest.raises(runtime.RuntimeSetupError, match="does not belong"):
+        prepare(1001)
+    with pytest.raises(runtime.RuntimeSetupError, match="does not belong"):
+        prepare(0)
+    os.lchown(set_dir / "manifest.json", 0, 0)
+    with pytest.raises(runtime.RuntimeSetupError, match="of its owner"):
+        prepare(1000)
+    assert not list(tmp_path.glob("*-scan-*"))
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to act as other users")
+def test_a_checkout_the_scan_account_cannot_read_is_named(monkeypatch: pytest.MonkeyPatch,
+                                                         tmp_path: Path) -> None:
+    from offscan import privdrop, sandbox
+    ident = privdrop.worker_identity()
+    assert ident is not None
+    private = tmp_path / "home"
+    private.mkdir(mode=0o700)
+    missing = "import offscan_is_not_here\n"
+    monkeypatch.setattr(sandbox, "_package_paths", lambda: [str(private)])
+    monkeypatch.setattr(sandbox, "_PROBE", sandbox._PROBE.replace("import offscan\n", missing))
+    problem = sandbox.import_problem(ident)
+    assert problem and ident.name in problem and str(private) in problem
+    monkeypatch.setattr(sandbox, "_BOOT", missing)
+    with pytest.raises(sandbox.SandboxError, match="cannot load"):
+        sandbox.run("selftest.echo", {})
+    assert sandbox.import_problem(None) is None
 
 
 def test_scanners_never_run_as_the_desktop_user(monkeypatch: pytest.MonkeyPatch) -> None:

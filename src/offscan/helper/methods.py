@@ -82,12 +82,16 @@ def register(server: Server, manager: VolumeManager, isolated: bool) -> None:
         identity = privdrop.worker_identity()
         if not opts.definitions or not os.path.isabs(opts.definitions):
             raise RemoteError(protocol.INVALID_PARAMS, "the scan needs a definition set")
-        user = privdrop.invoking_user()
+        # As root: the set must be the invoking user's or root's (root's only, if nobody is known).
+        owner = None
+        if os.geteuid() == 0:
+            user = privdrop.invoking_user()
+            owner = user.uid if user is not None else 0
         try:
             rt = runtime.prepare(Path(opts.definitions), opts,
                                  identity.uid if identity else os.geteuid(),
                                  identity.gid if identity else os.getegid(),
-                                 owner_uid=user.uid if user is not None and os.geteuid() == 0 else None)
+                                 owner_uid=owner)
         except (runtime.RuntimeSetupError, OSError, ValueError, KeyError) as exc:
             raise RemoteError(protocol.INVALID_PARAMS, f"cannot use the definitions: {exc}") from exc
         opts.runtime_dir = str(rt)

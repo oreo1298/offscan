@@ -95,6 +95,13 @@ jobs:
           echo "${BITLK_SHA256}  bitlk.tar.xz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/bitlk" && tar -xJf bitlk.tar.xz -C "$RUNNER_TEMP/bitlk"
       - run: pip install -e ".[dev]"
+      - name: Scan account, as the packages create it
+        # Scanners and parsers run as this account and import offscan from the
+        # checkout, so it must be able to reach it under the runner's home.
+        run: |
+          sudo useradd --system --no-create-home --home-dir / --shell /usr/sbin/nologin --user-group offscan
+          d="$GITHUB_WORKSPACE"
+          while [ "$d" != / ]; do sudo chmod o+x "$d"; d=$(dirname "$d"); done
       - name: Integration tests (as root)
         run: |
           sudo -E env "PATH=$PATH" "OFFSCAN_TEST_BITLK_DIR=$RUNNER_TEMP/bitlk/bitlk-images" \

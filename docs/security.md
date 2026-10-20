@@ -32,8 +32,10 @@ checked against a schema with size limits, at most 64 requests can be in flight,
 and only one scan runs at a time. The helper builds the scan's runtime directory
 itself from your definition set, so the client chooses neither the engines'
 configuration nor their socket. It opens every file of the set relative to the
-set's directory, without following links, and accepts only regular files you
-own with plain names.
+set's directory, without following links, and accepts only regular files with
+plain names that all belong to you. A set that belongs to root (as with
+`sudo offscan scan`) must be root's throughout, in directories nobody else can
+write to.
 
 ## Read-only, and the one exception
 
