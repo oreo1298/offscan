@@ -245,6 +245,11 @@ class ChecksRunner:
                 return
             info = self._info(osroot)
             results: dict[str, Any] = {}
+            if self.tools and not _nosymfollow(osroot.mountpoint):
+                # The tools get paths, not descriptors: without nosymfollow (Linux < 5.10) a
+                # symbolic link on the target could point them at the host.
+                info["tools"] = {"error": "external checkers need a kernel with nosymfollow (Linux 5.10+)"}
+                continue
             if osroot.kind == "linux" and "chkrootkit" in self.tools:
                 self.status("tools", f"Running chkrootkit on {osroot.name}…", None)
                 path = os.path.join(osroot.mountpoint, os.fsdecode(osroot.prefix.lstrip(b"/")))
@@ -294,3 +299,10 @@ def osroot_path(osroot: OSRoot, volume_path: bytes) -> bytes:
     if osroot.prefix and volume_path.startswith(osroot.prefix + b"/"):
         return volume_path[len(osroot.prefix):]
     return volume_path
+
+
+def _nosymfollow(mountpoint: str) -> bool:
+    """True if the mount the tools will read (the deepest one at ``mountpoint``) has nosymfollow."""
+    from ..drives import mountinfo
+    entries = [e for e in mountinfo.read("self") if e.mountpoint == mountpoint.rstrip("/")]
+    return bool(entries) and "nosymfollow" in entries[-1].options

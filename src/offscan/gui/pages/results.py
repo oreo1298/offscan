@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import posixpath
 from typing import Any
@@ -97,7 +98,8 @@ class DetectionsModel(QtCore.QAbstractTableModel):
         if role == Qt.ItemDataRole.DecorationRole and col == 0:
             return severity_icon(det.severity)
         if role == Qt.ItemDataRole.ToolTipRole and col in (1, 3):
-            return safe(det.details.get("value") or det.path, 1000)
+            # Qt guesses whether a tooltip is rich text; target data must never be HTML.
+            return "<qt>" + html.escape(safe(det.details.get("value") or det.path, 1000)) + "</qt>"
         if role == SORT_ROLE:
             if col == 0:
                 return SEVERITY_RANK.get(det.severity, 9)

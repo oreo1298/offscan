@@ -348,3 +348,13 @@ def test_self_check_builds_every_page(xdg_home: Path) -> None:
     assert out.returncode == 0, out.stderr
     assert "self-check: OK" in out.stdout and f"{len(PAGES)} pages" in out.stdout
     assert not (xdg_home / "data").exists()           # it writes no history or settings
+
+
+def test_tooltips_never_render_target_html(qtbot) -> None:
+    det = Detection(volume="sdb2", path="Windows/System32/config/SOFTWARE", engine="persistence",
+                    signature="windows.run_key", severity="medium",
+                    details={"value": '<b>Verified</b><img src="file:///etc/passwd">', "location": "Run"})
+    model = results_page.DetectionsModel()
+    model.set_rows([{"det": det, "status": "open"}])
+    tip = model.data(model.index(0, 3), Qt.ItemDataRole.ToolTipRole)
+    assert "<b>" not in tip and "<img" not in tip and "&lt;b&gt;" in tip

@@ -474,3 +474,32 @@ def test_dpkg_database(items: list[tuple[str, bytes]]) -> None:
         os.close(fd)
     for path, _pkg, algo, digest, _flags, _size in result["files"]:
         assert path.startswith("/") and algo == "md5" and len(digest) == 32
+
+
+@settings(deadline=1000)
+@given(st.text(alphabet="so.-/xlibc", min_size=1000, max_size=20000))
+def test_package_path_patterns_are_linear(tail: str) -> None:
+    """The quick-check patterns run in root on paths from the target's package database."""
+    packages.CRITICAL_RE.match("/lib/libc." + tail)
+    packages.CRITICAL_RE.match("/usr/lib/x86_64-linux-gnu/" + tail)
+    packages.DOC_RE.match("/usr/share/" + tail)
+
+
+def test_impossible_paths_are_dropped() -> None:
+    out = packages._Out("dpkg")
+    out.files.append(["/" + "a" * 300 + "/x", 0, "md5", "0" * 32, "", -1])
+    out.files.append(["/usr/bin/ls", 0, "md5", "0" * 32, "", -1])
+    result = out.result()
+    assert [f[0] for f in result["files"]] == ["/usr/bin/ls"] and result["errors"]
+
+
+@given(st.text(max_size=300))
+@example("\x1b]52;c;ZXZpbA==\x07\x1b[2J‮gnp.exe\x9b31m")
+def test_cli_output_never_carries_terminal_controls(text_in: str) -> None:
+    import io
+
+    from offscan.cli.main import TerminalSafe
+    buf = io.StringIO()
+    TerminalSafe(buf).write(text_in)
+    assert not TerminalSafe.UNSAFE.search(buf.getvalue())
+    assert all(ch in buf.getvalue() for ch in "\n\t\r" if ch in text_in)

@@ -68,23 +68,55 @@ def test_missing_tools_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_restricted_command_shape() -> None:
     if shutil.which("setpriv") is None:
         pytest.skip("setpriv missing")
+    if shutil.which("prlimit") is None:
+        pytest.skip("prlimit missing")
     argv = external.restricted(["/bin/true"], None)
-    assert "--no-new-privs" in argv and "--bounding-set=-all,+dac_read_search" in argv
+    assert "--no-new-privs" in argv and "--bounding-set=-all" in argv and "--inh-caps=-all" in argv
+    assert not any("dac_read_search" in a or "ambient" in a for a in argv)      # no capability at all
     assert argv[-1] == "/bin/true" and "--reuid=65534" in argv
+    assert any(a.startswith("--fsize=") for a in argv)
+
+
+def test_only_root_owned_tools_are_used(tmp_path: Path) -> None:
+    tool = tmp_path / "chkrootkit"
+    tool.write_text("#!/bin/sh\n")
+    tool.chmod(0o755)
+    # /tmp (above tmp_path) is writable by everyone, so nothing below it is trusted
+    assert external.find_tool("chkrootkit", str(tool)) is None
+    assert external.trusted_binary("/bin/sh") or not Path("/bin/sh").exists()
+    assert not external.trusted_binary("/nonexistent/tool")
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(os.geteuid() != 0 or not shutil.which("chkrootkit", path="/usr/sbin:/usr/bin")
                     or not shutil.which("setpriv"), reason="needs root, setpriv and chkrootkit")
-def test_chkrootkit_runs_read_only(tmp_path: Path) -> None:
-    root = build_linux_root(tmp_path / "t")
-    secret = root / "root/.secret"
-    secret.write_text("x")
-    secret.chmod(0o600)
-    tmp_path.chmod(0o700)                     # the checker reads with CAP_DAC_READ_SEARCH only
-    before = sorted((p, p.stat().st_mtime_ns) for p in root.rglob("*") if not p.is_symlink())
-    findings, info = external.run_chkrootkit(str(root), None, timeout=600)
-    assert "error" not in info, info
-    assert any(f.file == "/tmp/payload" for f in findings), [f.title for f in findings]
-    after = sorted((p, p.stat().st_mtime_ns) for p in root.rglob("*") if not p.is_symlink())
-    assert before == after
+def injection_names(canary: Path) -> list[str]:
+    """File names that create ``canary`` if a shell ever evaluates them (no '/' allowed in names)."""
+    octal = str(canary).replace("/", "\\057")
+    make = f"touch \"$(printf '{octal}')\""
+    return [f"x$({make})", f"y`{make}`", f"z;{make};"]
+
+
+def test_chkrootkit_runs_read_only() -> None:
+    import tempfile
+    base = Path(tempfile.mkdtemp(dir="/var/tmp"))        # the checker has no capability: it must
+    base.chmod(0o777)                                    # walk to the target itself (and could
+                                                         # create the canary if injected)
+    try:
+        root = build_linux_root(base / "t")
+        secret = root / "root/.secret"
+        secret.write_text("x")
+        secret.chmod(0o600)
+        (root / "tmp/.uua").write_text("")              # chkrootkit's Scalper worm marker
+        canary = base / "PWNED"
+        for name in injection_names(canary):
+            (root / "tmp" / name).write_text("#!/bin/sh\n")
+        before = sorted((p, p.stat().st_mtime_ns) for p in root.rglob("*") if not p.is_symlink())
+        findings, info = external.run_chkrootkit(str(root), None, timeout=600)
+        assert "error" not in info, info
+        assert any("Scalper" in f.title for f in findings), [f.title for f in findings]
+        assert not canary.exists()                      # file names from the target never run
+        after = sorted((p, p.stat().st_mtime_ns) for p in root.rglob("*") if not p.is_symlink())
+        assert before == after
+    finally:
+        shutil.rmtree(base)

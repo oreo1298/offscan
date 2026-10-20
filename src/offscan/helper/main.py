@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
 
     privdrop.disable_core_dumps()
     privdrop.set_not_dumpable()
+    privdrop.raise_open_files_limit()
     tools.disable_env_tool_dirs()
     os.umask(0o022)
 

@@ -13,8 +13,10 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import selectors
 import subprocess
 import sys
+import time
 from typing import Any
 
 from . import privdrop
@@ -81,10 +83,8 @@ def run(task: str, args: dict[str, Any] | None = None, fds: list[int] | None = N
     env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "HOME": ident.home if ident else "/",
            "PYTHONDONTWRITEBYTECODE": "1"}
     try:
-        proc = subprocess.run(
-            [sys.executable, "-I", "-c", _BOOT, json.dumps(_package_paths())],
-            input=request, capture_output=True, timeout=timeout, pass_fds=tuple(fds),
-            env=env, cwd="/", check=False, **kwargs)
+        proc = _run_bounded([sys.executable, "-I", "-c", _BOOT, json.dumps(_package_paths())],
+                            request, timeout, fds, env, kwargs)
     except subprocess.TimeoutExpired as exc:
         raise SandboxError(f"sandbox task {task} timed out") from exc
     if proc.returncode != 0:
@@ -99,6 +99,62 @@ def run(task: str, args: dict[str, Any] | None = None, fds: list[int] | None = N
     if not reply["ok"]:
         raise SandboxError(str(reply.get("error", "unknown error")))
     return reply.get("result")
+
+
+MAX_REPLY = 512 << 20          # the largest reply root reads from a sandbox child
+MAX_STDERR = 1 << 20
+
+
+def _run_bounded(argv: list[str], request: bytes, timeout: float, fds: list[int], env: dict[str, str],
+                 kwargs: dict[str, Any]) -> subprocess.CompletedProcess:
+    """Like subprocess.run(capture_output=True), but never reads more than MAX_REPLY."""
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            pass_fds=tuple(fds), env=env, cwd="/", **kwargs)
+    deadline = time.monotonic() + timeout
+    out, err = bytearray(), bytearray()
+    try:
+        with selectors.DefaultSelector() as sel:
+            assert proc.stdin and proc.stdout and proc.stderr
+            sel.register(proc.stdout, selectors.EVENT_READ, out)
+            sel.register(proc.stderr, selectors.EVENT_READ, err)
+            pending = memoryview(request)
+            os.set_blocking(proc.stdin.fileno(), False)
+            sel.register(proc.stdin, selectors.EVENT_WRITE, None)
+            while sel.get_map():
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                for key, _events in sel.select(min(left, 1.0)):
+                    if key.data is None:                       # stdin
+                        try:
+                            written = os.write(key.fd, pending[:65536])
+                        except BrokenPipeError:
+                            written = len(pending)
+                        pending = pending[written:]
+                        if not pending:
+                            sel.unregister(key.fileobj)
+                            key.fileobj.close()
+                        continue
+                    chunk = os.read(key.fd, 1 << 20)
+                    if not chunk:
+                        sel.unregister(key.fileobj)
+                        continue
+                    buf = key.data
+                    buf += chunk
+                    if buf is out and len(out) > MAX_REPLY:
+                        raise SandboxError("sandbox reply is too large")
+                    if buf is err and len(err) > MAX_STDERR:
+                        del err[:-MAX_STDERR]
+        proc.wait(max(0.1, deadline - time.monotonic()))
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream and not stream.closed:
+                stream.close()
+    return subprocess.CompletedProcess(argv, proc.returncode, bytes(out), bytes(err))
 
 
 def child_main() -> None:

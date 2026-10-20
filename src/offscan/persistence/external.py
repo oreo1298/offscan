@@ -1,10 +1,12 @@
 """Optional external checkers: chkrootkit (Linux) and Hayabusa / Chainsaw (Windows event logs).
 
 None of them is bundled; each is used only if installed and enabled for the
-scan.  They run in the helper's empty network namespace as the unprivileged
-scan user, keeping only ``CAP_DAC_READ_SEARCH`` (read any file) through
-``setpriv``, with ``no_new_privs`` and a timeout.  The target is mounted
-read-only and ``noexec``, so chkrootkit cannot run the target's binaries.
+scan, and only from a root-owned location nobody else can write to.  They run
+in the helper's empty network namespace as the unprivileged scan user without
+any capability (``setpriv``), with ``no_new_privs``, a file-size limit
+(``prlimit``), no standard input, private file modes and a timeout.  They see
+the target through a read-only, ``noexec``, ``nosymfollow`` mount, so neither
+the target's programs nor its symbolic links can be used against the host.
 Their output is treated as untrusted text: size-limited, parsed, never
 executed.
 """
@@ -15,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -26,12 +29,13 @@ from . import Finding
 logger = log.get("persistence.external")
 
 MAX_OUTPUT = 32 << 20
-SETPRIV_CAPS = "-all,+dac_read_search"
 
 # chkrootkit tests that only look at files below -r.  Left out: tests that inspect the
-# running host (bindshell, lkm, sniffer, chkutmp, ifconfig) or its login records.
+# running host (bindshell, lkm, sniffer, chkutmp, ifconfig) or its login records, and
+# "aliens", which pastes the names of files it finds on the target into shell commands
+# (chkrootkit 0.58b runs `find ... -exec sh -c '... "{}"'`), so a file name could run code.
 CHKROOTKIT_TESTS = (
-    "aliens asp rexedcs w55808 scalper slapper OSX_RSPLUG ldsopreload amd basename biff chfn chsh cron "
+    "asp rexedcs w55808 scalper slapper OSX_RSPLUG ldsopreload amd basename biff chfn chsh cron "
     "crontab date du dirname echo egrep env find fingerd gpm grep hdparm su inetd inetdconf identd init "
     "killall login ls lsof mail mingetty netstat named passwd pidof pop2 pop3 ps pstree rpcinfo rlogind rshd "
     "slogin sendmail sshd syslogd tar tcpd tcpdump top telnetd timed traceroute vdir w write").split()
@@ -39,39 +43,60 @@ SEARCH_DIRS = ("/usr/local/bin", "/usr/bin", "/opt/hayabusa", "/opt/chainsaw", "
                "/usr/local/share/chainsaw")
 
 
+def trusted_binary(path: str) -> bool:
+    """True if ``path`` and every directory above it are root-owned and writable by no one else."""
+    real = os.path.realpath(path)
+    current = real
+    while True:
+        try:
+            st = os.lstat(current)
+        except OSError:
+            return False
+        if st.st_uid != 0 or st.st_mode & 0o022:
+            return False
+        if current == "/":
+            return os.path.isfile(real) and os.access(real, os.X_OK)
+        current = os.path.dirname(current)
+
+
 def find_tool(name: str, configured: str | None = None) -> str | None:
     if configured:
-        return configured if os.path.isabs(configured) and os.access(configured, os.X_OK) else None
+        return configured if os.path.isabs(configured) and trusted_binary(configured) else None
     found = tools.find(name)
-    if found:
+    if found and trusted_binary(found):
         return found
     for directory in SEARCH_DIRS:
         candidate = os.path.join(directory, name)
-        if os.access(candidate, os.X_OK):
+        if os.access(candidate, os.X_OK) and trusted_binary(candidate):
             return candidate
         for entry in sorted(Path(directory).glob(f"{name}*")) if os.path.isdir(directory) else []:
-            if entry.is_file() and os.access(entry, os.X_OK):
+            if entry.is_file() and trusted_binary(str(entry)):
                 return str(entry)
     return None
 
 
 def restricted(argv: list[str], identity: privdrop.Identity | None) -> list[str]:
-    """Wrap a command so it runs unprivileged but can read every file (no writes, no setuid)."""
+    """Wrap a command so it runs unprivileged: no capabilities, no setuid, limited file sizes."""
     setpriv = tools.find("setpriv")
-    if setpriv is None:
-        raise tools.ToolError("setpriv (util-linux) is needed to run external checkers safely")
+    prlimit = tools.find("prlimit")
+    if setpriv is None or prlimit is None:
+        raise tools.ToolError("setpriv and prlimit (util-linux) are needed to run external checkers safely")
     uid = identity.uid if identity else 65534
     gid = identity.gid if identity else 65534
-    return [setpriv, f"--reuid={uid}", f"--regid={gid}", "--clear-groups", f"--inh-caps={SETPRIV_CAPS}",
-            f"--ambient-caps={SETPRIV_CAPS}", f"--bounding-set={SETPRIV_CAPS}", "--no-new-privs", "--",
-            *argv]
+    return [prlimit, f"--fsize={MAX_OUTPUT}", "--core=0", "--",
+            setpriv, f"--reuid={uid}", f"--regid={gid}", "--clear-groups", "--inh-caps=-all",
+            "--bounding-set=-all", "--no-new-privs", "--", *argv]
 
 
 def _run(argv: list[str], identity: privdrop.Identity | None, timeout: float, cwd: str = "/",
          env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     base = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"}
-    proc = subprocess.run(restricted(argv, identity), capture_output=True, timeout=timeout, cwd=cwd,
-                          env={**base, **(env or {})}, check=False)
+    old = os.umask(0o077)
+    try:
+        proc = subprocess.run(restricted(argv, identity), stdin=subprocess.DEVNULL, capture_output=True,
+                              timeout=timeout, cwd=cwd, env={**base, **(env or {})}, check=False)
+    finally:
+        os.umask(old)
     proc.stdout = proc.stdout[:MAX_OUTPUT]
     proc.stderr = proc.stderr[-65536:]
     return proc
@@ -168,7 +193,11 @@ def run_hayabusa(evtx_dir: str, identity: privdrop.Identity | None, min_level: s
         if not os.path.exists(out):
             err = proc.stderr.decode("utf-8", "replace").strip()[-300:] if proc else ""
             return [], {"error": f"Hayabusa produced no timeline: {err}"}
-        with open(out, "rb") as fh:
+        # The directory belongs to the tool's user: open without following links, regular files only.
+        fd = os.open(out, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return [], {"error": "Hayabusa's output is not a regular file"}
             data = fh.read(MAX_OUTPUT)
         return parse_hayabusa(data.decode("utf-8", "replace")), {"exit": proc.returncode if proc else None}
     finally:

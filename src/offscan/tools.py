@@ -79,10 +79,11 @@ def run(args: Sequence[str], *, timeout: float = 120, input: bytes | None = None
     if not args or not os.path.isabs(args[0]):
         raise ValueError("run() needs an absolute program path")
     try:
+        # stdin is never inherited: in the helper it is the protocol pipe.
         proc = subprocess.run(
-            list(args), input=input, capture_output=True, timeout=timeout,
-            env=safe_env(env), cwd=cwd, close_fds=True, pass_fds=tuple(pass_fds),
-            check=False)
+            list(args), input=input, stdin=None if input is not None else subprocess.DEVNULL,
+            capture_output=True, timeout=timeout, env=safe_env(env), cwd=cwd, close_fds=True,
+            pass_fds=tuple(pass_fds), check=False)
     except subprocess.TimeoutExpired as exc:
         raise ToolError(f"{os.path.basename(args[0])} timed out after {timeout}s") from exc
     except OSError as exc:

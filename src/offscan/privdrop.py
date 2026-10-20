@@ -63,6 +63,18 @@ def worker_identity() -> Identity | None:
     return invoking_user() or nobody()
 
 
+def raise_open_files_limit() -> int:
+    """Use the hard limit on open files (desktop sessions often set a soft limit of 1024)."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and soft < hard:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+            return hard
+        except (ValueError, OSError):
+            pass
+    return soft
+
+
 def set_no_new_privs() -> bool:
     return _libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0
 

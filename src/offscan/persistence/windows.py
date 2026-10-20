@@ -10,6 +10,7 @@ never written back.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import stat
@@ -29,6 +30,9 @@ MAX_WMI = 512 << 20
 # ----------------------------------------------------------------- collection
 
 
+MAX_PROFILES = 64            # user profiles analysed per installation (each holds up to 6 descriptors)
+
+
 def _open(root: RootFS, path: bytes | None, limit: int) -> int | None:
     if path is None:
         return None
@@ -37,7 +41,9 @@ def _open(root: RootFS, path: bytes | None, limit: int) -> int | None:
         if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
             return None
         return root.open_regular(path, follow_last=False)
-    except OSError:
+    except OSError as exc:
+        if exc.errno in (errno.EMFILE, errno.ENFILE):
+            raise                    # never silently skip a hive because we ran out of descriptors
         return None
 
 
@@ -74,9 +80,11 @@ def collect(root: RootFS) -> tuple[dict[str, Any], list[int]]:
             profiles = root.listdir(users)
         except OSError:
             profiles = []
+        profiles = [n for n in profiles if n.lower() not in (b"public", b"default user", b"all users")]
+        if len(profiles) > MAX_PROFILES:
+            args["skipped_profiles"] = len(profiles) - MAX_PROFILES
+            profiles = sorted(profiles)[:MAX_PROFILES]
         for name in profiles:
-            if name.lower() in (b"public", b"default user", b"all users"):
-                continue
             profile = users + b"/" + name
             user, wire_profile = names.to_wire(name), names.to_wire(profile)
             add_hive(root.find_ci(profile + b"/NTUSER.DAT"), "NTUSER", user=user, profile=wire_profile)
@@ -553,6 +561,9 @@ def analyze_startup(items: list[dict[str, Any]], ctx: _Ctx) -> None:
 def task_persistence(args: dict[str, Any], fds: list[int]) -> dict[str, Any]:
     """Sandbox entry point (see offscan.sandbox.TASKS)."""
     ctx = _Ctx()
+    if args.get("skipped_profiles"):
+        ctx.errors.append(f"{args['skipped_profiles']} more user profiles were not checked "
+                          f"(only {MAX_PROFILES} are)")
     analyzers = {"SOFTWARE": analyze_software, "SYSTEM": analyze_system}
     with tempfile.TemporaryDirectory(prefix="hives-") as tmp:
         for spec in args.get("hives", []):

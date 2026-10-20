@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from .. import appinfo, log
 
@@ -82,7 +84,39 @@ def _command_modules() -> list[Callable[[argparse._SubParsersAction], None]]:
     return registrars
 
 
+class TerminalSafe:
+    """A text stream that shows terminal control characters instead of sending them.
+
+    Volume labels, OS names, registry values and file names all come from the
+    drives being scanned; written raw they could move the cursor, rewrite the
+    screen or set the clipboard (OSC 52). Newline, tab and carriage return
+    (the progress line) pass through.
+    """
+
+    UNSAFE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029"
+                        "\u202a-\u202e\u2066-\u2069]")
+
+    def __init__(self, stream: Any):
+        self._stream = stream
+
+    @staticmethod
+    def _escape(match: re.Match[str]) -> str:
+        code = ord(match.group())
+        return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+
+    def write(self, text: str) -> int:
+        self._stream.write(self.UNSAFE.sub(self._escape, text))
+        return len(text)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    if not isinstance(sys.stdout, TerminalSafe):
+        sys.stdout = TerminalSafe(sys.stdout)        # type: ignore[assignment]
+    if not isinstance(sys.stderr, TerminalSafe):
+        sys.stderr = TerminalSafe(sys.stderr)        # type: ignore[assignment]
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):

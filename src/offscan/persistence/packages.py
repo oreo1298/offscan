@@ -116,8 +116,17 @@ class _Out:
         return len(self.packages) - 1
 
     def result(self) -> dict[str, Any]:
-        return {"manager": self.manager, "packages": self.packages, "files": self.files,
-                "owned": self.owned, "errors": self.errors[:100]}
+        files = [f for f in self.files if plausible_path(f[0])]
+        owned = [p for p in self.owned if plausible_path(p)]
+        if len(files) < len(self.files) or len(owned) < len(self.owned):
+            self.errors.append("entries with impossible paths were ignored")
+        return {"manager": self.manager, "packages": self.packages, "files": files,
+                "owned": owned, "errors": self.errors[:100]}
+
+
+def plausible_path(path: str) -> bool:
+    """A path a real filesystem can hold (PATH_MAX, NAME_MAX); anything else is junk or an attack."""
+    return len(path) <= 4096 and all(len(part) <= 255 for part in path.split("/"))
 
 
 def _dpkg(args: dict[str, Any], fd: int, out: _Out) -> None:
@@ -446,7 +455,7 @@ def norm(path: str) -> str:
 CRITICAL_RE = re.compile(
     r"^/(usr/)?s?bin/[^/]+$"
     r"|^/(usr/)?lib(64|32|x32)?/([^/]+/)?security/[^/]+$"
-    r"|^/(usr/)?lib(64|32|x32)?/([^/]+/)?(ld-linux[^/]*|libc[.-][^/]*so[^/]*|libpam[^/]*|libcrypt[^/]*"
+    r"|^/(usr/)?lib(64|32|x32)?/([^/]+/)?(ld-linux[^/]*|libc[.-](?=[^/]*so)[^/]*|libpam[^/]*|libcrypt[^/]*"
     r"|libnss_[^/]*|libsystemd\.so[^/]*|libselinux\.so[^/]*|libaudit\.so[^/]*|libkeyutils\.so[^/]*"
     r"|libssl\.so[^/]*|libcrypto\.so[^/]*|libz\.so[^/]*)$"
     r"|^/(usr/)?lib/systemd/systemd[^/]*$"
