@@ -15,6 +15,16 @@ import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 
+from . import appinfo
+
+_env_tool_dirs = True
+
+
+def disable_env_tool_dirs() -> None:
+    global _env_tool_dirs
+    _env_tool_dirs = False
+
+
 SYSTEM_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
 SAFE_PATH = ":".join(SYSTEM_DIRS)
 
@@ -33,6 +43,12 @@ def find(name: str, extra_dirs: Sequence[str] = (), use_path: bool = False) -> s
     if "/" in name:
         return name if os.access(name, os.X_OK) else None
     dirs = list(extra_dirs) + list(SYSTEM_DIRS)
+    # Tests (and unusual installs) may add tool directories for unprivileged
+    # code; the privileged helper disables this so it only ever runs programs
+    # from the system directories.
+    override = os.environ.get(appinfo.env("TOOL_DIRS"), "") if _env_tool_dirs else ""
+    if override:
+        dirs = [d for d in override.split(":") if os.path.isabs(d)] + dirs
     if use_path:
         dirs += [d for d in os.environ.get("PATH", "").split(":") if d and os.path.isabs(d)]
     for directory in dirs:

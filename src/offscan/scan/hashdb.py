@@ -62,6 +62,40 @@ def build(path: Path, entries: Iterable[tuple[bytes, str]]) -> int:
     return len(ordered)
 
 
+def build_sorted(path: Path, digests: Iterable[bytes], source: str) -> int:
+    """Write a single-source database from digests already sorted and unique.
+
+    Streams to disk, so it works for lists far larger than memory (NSRL).
+    """
+    table = json.dumps([source]).encode()
+    header_len = 16 + len(table)
+    header_len += -header_len % 8
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    count = 0
+    previous = b""
+    with open(tmp, "wb") as fh:
+        fh.write(b"\0" * header_len)
+        for digest in digests:
+            if len(digest) != DIGEST or digest <= previous:
+                raise HashDBError("digests must be 32 bytes, sorted and unique")
+            fh.write(digest)
+            previous = digest
+            count += 1
+        zeros = b"\0" * 65536
+        remaining = count * 2
+        while remaining:
+            n = min(remaining, len(zeros))
+            fh.write(zeros[:n])
+            remaining -= n
+        header = MAGIC + struct.pack("<II", count, len(table)) + table
+        fh.seek(0)
+        fh.write(header + b"\0" * (header_len - len(header)))
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    return count
+
+
 class HashDB:
     def __init__(self, path: str | os.PathLike[str]):
         self.path = str(path)

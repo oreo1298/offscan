@@ -67,7 +67,7 @@ def prepare(set_dir: Path, options: ScanOptions, scan_uid: int, scan_gid: int,
         hdir = runtime / "hashes"
         hdir.mkdir(mode=0o755)
         hashes = manifest.get("hashes") or {}
-        for name in [*hashes.get("malware", []), hashes.get("known_good")]:
+        for name in [*hashes.get("malware", []), hashes.get("known_good"), hashes.get("authentihash")]:
             if name:
                 _link_or_copy(set_dir / "hashes" / name, hdir / name)
         (runtime / layout.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")

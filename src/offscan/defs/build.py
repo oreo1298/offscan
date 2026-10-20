@@ -22,14 +22,17 @@ def build_set(out: Path, *,
               yara_namespaces: dict[str, str] | None = None,
               hash_lists: dict[str, tuple[dict[str, Any], Iterable[bytes]]] | None = None,
               known_good: Iterable[bytes] | None = None,
-              yara_engine_name: str | None = None) -> dict[str, Any]:
+              known_good_sorted: bool = False,
+              authentihash_lists: dict[str, tuple[dict[str, Any], Iterable[bytes]]] | None = None,
+              yara_engine_name: str | None = None,
+              extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Create ``out`` (must not exist) and return the manifest written into it."""
     out.mkdir(parents=True, mode=0o755)
     manifest: dict[str, Any] = {"id": set_id, "created": time.time(), "sources": sources,
                                 "clamav": {"files": [], "official": clamav_official,
                                            "system_dir": layout.SYSTEM_CLAMAV_DIR},
                                 "yara": {}, "hashes": {"malware": [], "known_good": None},
-                                "hash_sources": {}}
+                                "hash_sources": {}, **(extra or {})}
     cdir = out / "clamav"
     cdir.mkdir(mode=0o755)
     for name, content in sorted((clamav_files or {}).items()):
@@ -71,8 +74,20 @@ def build_set(out: Path, *,
         os.chmod(hdir / "malware.ofh", 0o644)
         manifest["hashes"]["malware"].append("malware.ofh")
         manifest["hashes"]["malware_count"] = count
+    if authentihash_lists:
+        entries = []
+        for source_id, (meta, digests) in authentihash_lists.items():
+            manifest["hash_sources"][source_id] = meta
+            entries.extend((d, source_id) for d in digests)
+        count = hashdb.build(hdir / "authentihash.ofh", entries)
+        os.chmod(hdir / "authentihash.ofh", 0o644)
+        manifest["hashes"]["authentihash"] = "authentihash.ofh"
+        manifest["hashes"]["authentihash_count"] = count
     if known_good is not None:
-        count = hashdb.build(hdir / "known_good.ofh", ((d, "known_good") for d in known_good))
+        if known_good_sorted:
+            count = hashdb.build_sorted(hdir / "known_good.ofh", known_good, "known_good")
+        else:
+            count = hashdb.build(hdir / "known_good.ofh", ((d, "known_good") for d in known_good))
         os.chmod(hdir / "known_good.ofh", 0o644)
         manifest["hashes"]["known_good"] = "known_good.ofh"
         manifest["hashes"]["known_good_count"] = count

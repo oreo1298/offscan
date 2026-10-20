@@ -7,7 +7,7 @@ import os
 import signal
 import sys
 
-from .. import appinfo, log, privdrop, protocol
+from .. import appinfo, log, privdrop, protocol, tools
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
 
     privdrop.disable_core_dumps()
     privdrop.set_not_dumpable()
+    tools.disable_env_tool_dirs()
     os.umask(0o022)
 
     # The protocol owns the original stdout; anything else printing to fd 1

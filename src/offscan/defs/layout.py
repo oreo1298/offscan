@@ -56,9 +56,9 @@ def write_manifest(set_dir: Path, manifest: dict[str, Any]) -> None:
     tmp.replace(set_dir / MANIFEST)
 
 
-def system_clamav_files(directory: str = SYSTEM_CLAMAV_DIR) -> list[Path]:
+def system_clamav_files(directory: str | None = None) -> list[Path]:
     """Official databases maintained by the distribution's freshclam."""
-    base = Path(directory)
+    base = Path(directory or SYSTEM_CLAMAV_DIR)
     try:
         entries = sorted(base.iterdir())
     except OSError:
