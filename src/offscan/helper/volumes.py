@@ -217,6 +217,11 @@ class VolumeManager:
                              f"by this computer at {', '.join(host_mounts)}. The scan will use a "
                              "read-only view, but other programs can still write to it. Unmount "
                              "it first for full protection."})
+        elif self._host_holders(dev.kname, ours):
+            warnings.append({"code": "in_use_by_host", "message": "This computer is already using "
+                             "this volume (an active LVM, RAID or encryption mapping: "
+                             f"{', '.join(self._host_holders(dev.kname, ours))}). Deactivate it "
+                             "first, or the scan may see changing data."})
         elif host_mounts:
             warnings.append({"code": "mounted_elsewhere_ro", "message": "Already mounted "
                              f"(read-only) by this computer at {', '.join(host_mounts)}; the scan "
@@ -244,6 +249,24 @@ class VolumeManager:
             if parent == dev.kname and child_kname in snap.devices:
                 info["children"].append(self._describe_volume(snap.devices[child_kname], snap, ours))
         return info
+
+    @staticmethod
+    def _host_holders(kname: str, ours: dict[str, Layer]) -> list[str]:
+        """Device-mapper/md devices the host stacked on ``kname`` (not ours)."""
+        try:
+            holders = os.listdir(f"/sys/class/block/{kname}/holders")
+        except OSError:
+            return []
+        out = []
+        for holder in holders:
+            if holder in ours:
+                continue
+            try:
+                with open(f"/sys/class/block/{holder}/dm/name", encoding="utf-8") as fh:
+                    out.append(fh.read().strip())
+            except OSError:
+                out.append(holder)
+        return out
 
     @staticmethod
     def _cache_key(dev: BlockDevice) -> str:

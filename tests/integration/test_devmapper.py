@@ -100,9 +100,19 @@ def lvm_image(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return img
 
 
+def _host_deactivate() -> None:
+    # Desktop/CI udev may auto-activate the fixture VG on the test's own loop
+    # device; that is the host's doing, not ours, so undo it for the test.
+    images.run("lvm", "vgchange", "-q", "--config", "devices { use_devicesfile = 0 }", "-an",
+               "fixturevg", check=False)
+
+
 def test_lvm_readonly_activation(lvm_image: Path, no_leaks, helper) -> None:
     before = images.sha256(lvm_image)
     with images.attached(lvm_image) as dev:
+        import time
+        time.sleep(1)
+        _host_deactivate()
         vol = _vol(helper, dev)
         assert vol["role"] == "lvm_pv"
         res = helper.call("volume.activate_lvm", {"volume": vol["id"]}, timeout=120)
@@ -116,6 +126,7 @@ def test_lvm_readonly_activation(lvm_image: Path, no_leaks, helper) -> None:
             assert fs.read_file("/etc/os-release").startswith(b"NAME=")
         helper.call("session.cleanup", {}, timeout=120)
         assert not os.path.exists(names["fixturevg/root"]["device"])
+        _host_deactivate()
     assert images.sha256(lvm_image) == before
 
 
@@ -179,9 +190,11 @@ def test_bitlocker_unlock(bitlk, kind: str, no_leaks, helper) -> None:
         res = helper.call("volume.unlock", {"volume": vol["id"], "secret": secret,
                                             "secret_kind": kind}, timeout=180)
         assert blockdev.get_ro(res["device"])
+        # Same check as cryptsetup's own test suite: the decrypted device must
+        # match the known plaintext hash.  (The test images' NTFS contents are
+        # not complete enough to mount.)
+        assert images.sha256(Path(res["device"])) == conf["SHA256SUM"]
         child = _vol(helper, dev)["children"][0]
-        if child.get("fstype") in ("ntfs", "vfat", "exfat"):
-            info = helper.call("volume.mount", {"volume": child["id"]}, timeout=120)
-            assert os.path.ismount(info["mountpoint"])
+        assert child["fstype"] == "ntfs"
         helper.call("volume.lock", {"volume": vol["id"]}, timeout=120)
     assert images.sha256(img) == before
