@@ -149,15 +149,15 @@ def many_files_image(tmp_path_factory: pytest.TempPathFactory) -> Path:
     require("mkfs.ext4")
     work = tmp_path_factory.mktemp("many")
     src = work / "src"
-    for i in range(60):
+    for i in range(100):
         d = src / f"dir{i:02d}"
         d.mkdir(parents=True)
-        for j in range(100):
-            (d / f"file{j:03d}.bin").write_bytes(os.urandom(2048))
+        for j in range(200):
+            (d / f"file{j:03d}.bin").write_bytes(os.urandom(1024))
     img = work / "many.img"
     with open(img, "wb") as fh:
         fh.truncate(128 << 20)
-    images.run("mkfs.ext4", "-q", "-F", "-N", "10000", "-d", str(src), str(img))
+    images.run("mkfs.ext4", "-q", "-F", "-N", "30000", "-d", str(src), str(img))
     return img
 
 
@@ -191,9 +191,13 @@ def test_pause_resume_cancel(many_files_image: Path, no_leaks, helper: HelperCli
         assert progress[-1]["files_done"] <= frozen + 2      # in-flight files may finish
         assert progress[-1]["paused"] is True
         session.resume()
-        _time.sleep(1.0)
+        deadline = _time.monotonic() + 60
+        while progress[-1]["files_done"] <= frozen + 2 and _time.monotonic() < deadline:
+            _time.sleep(0.01)
+        session.pause()                                       # cancel while paused: deterministic
+        assert progress[-1]["files_done"] > frozen
         session.cancel()
         thread.join(120)
         assert not thread.is_alive()
     assert result["state"] == "cancelled"
-    assert 0 < result["files_scanned"] < 6000
+    assert 0 < result["files_scanned"] < 20000

@@ -172,7 +172,8 @@ def test_runtime_prepare_layout(tmp_path: Path) -> None:
     rt = _runtime(tmp_path)
     assert stat.S_IMODE(rt.stat().st_mode) == 0o700
     manifest = layout.load_manifest(rt)
-    assert manifest["yara"]["rules"] == 1
+    if yara_engine.engine_name():
+        assert manifest["yara"]["rules"] == 1
     assert (rt / "clamd.conf").read_text().count("LocalSocket ") == 1
     assert (rt / "hashes" / "malware.ofh").exists()
     runtime.cleanup(rt)
