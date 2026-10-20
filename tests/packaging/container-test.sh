@@ -13,6 +13,7 @@
 # wheels in /dist/wheels. Started by .github/workflows/packages.yml and
 # tests/packaging/run-containers.sh.
 set -euo pipefail
+shopt -s inherit_errexit        # failures inside $(...) count too
 
 mode=${1:?usage: container-test.sh package|script}
 src=${SRC:-/src}
@@ -56,7 +57,13 @@ case "$family" in
     fedora)
         sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf ;;
     opensuse)
-        sed -i 's/^rpm.install.excludedocs.*/rpm.install.excludedocs = no/' /etc/zypp/zypp.conf
+        # Tumbleweed keeps the defaults in /usr/etc; a copy in /etc overrides them.
+        if [ ! -e /etc/zypp/zypp.conf ] && [ -e /usr/etc/zypp/zypp.conf ]; then
+            cp /usr/etc/zypp/zypp.conf /etc/zypp/zypp.conf
+        fi
+        if [ -e /etc/zypp/zypp.conf ]; then
+            sed -i 's/^rpm.install.excludedocs.*/rpm.install.excludedocs = no/' /etc/zypp/zypp.conf
+        fi
         zypper --non-interactive --quiet refresh ;;
     arch)
         sed -i '/^NoExtract/d' /etc/pacman.conf
