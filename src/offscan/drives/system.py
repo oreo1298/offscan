@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from . import mountinfo
 
 ESSENTIAL_MOUNTS = ("/", "/boot", "/boot/efi", "/efi", "/home", "/usr", "/var")
+# GPT types of the EFI system partition and the extended boot loader partition.
+BOOT_PARTITION_TYPES = ("c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "bc13c2ff-59e6-4262-a352-b275fd6f7172")
 LIVE_MEDIUM_MOUNTS = ("/cdrom", "/run/live/medium", "/run/initramfs/live",
                       "/run/archiso/bootmnt", "/run/archiso/cowspace", "/lib/live/mount/medium",
                       "/run/media/liveuser", "/isodevice")
@@ -49,6 +51,40 @@ def kname_for_path(path: str) -> str | None:
     if not (st.st_mode & 0o060000 == 0o060000):  # S_ISBLK
         return None
     return kname_for_majmin(f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}")
+
+
+def mount_kname(entry: mountinfo.MountEntry) -> str | None:
+    """The block device behind a mount, or None.
+
+    Device numbers are trusted. A ``/dev/...`` source string only is for
+    root's own FUSE block mounts (ntfs-3g): any user can start a FUSE mount
+    that calls itself ``/dev/sdb1``.
+    """
+    kname = kname_for_majmin(entry.majmin)
+    if kname is None and entry.fstype == "fuseblk" and entry.source.startswith("/dev/") \
+            and "user_id=0" in entry.super_options:
+        kname = kname_for_path(entry.source)
+    return kname
+
+
+def _fstab_kname(mountpoint: str, fstab: str = "/etc/fstab") -> str | None:
+    """Device of an fstab entry (for automount points that are not mounted yet)."""
+    try:
+        with open(fstab, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 2 or fields[0].startswith("#") or fields[1] != mountpoint:
+            continue
+        spec = fields[0]
+        for prefix, directory in (("UUID=", "by-uuid"), ("PARTUUID=", "by-partuuid"),
+                                  ("LABEL=", "by-label"), ("PARTLABEL=", "by-partlabel")):
+            if spec.startswith(prefix):
+                spec = f"/dev/disk/{directory}/{spec[len(prefix):].strip(chr(34))}"
+        return kname_for_path(spec) if spec.startswith("/dev/") else None
+    return None
 
 
 def lower_devices(kname: str, sys_class: str = "/sys/class/block") -> set[str]:
@@ -118,8 +154,9 @@ def detect(entries: list[mountinfo.MountEntry] | None = None) -> SystemDevices:
         entry = by_mountpoint.get(mp)
         if entry is None:
             continue
-        kname = kname_for_majmin(entry.majmin) or (kname_for_path(entry.source)
-                                                   if entry.source.startswith("/dev/") else None)
+        kname = mount_kname(entry)
+        if kname is None and entry.fstype == "autofs":       # e.g. an ESP not mounted yet
+            kname = _fstab_kname(mp)
         if kname:
             for low in lower_devices(kname):
                 result.add(low, f"backs {mp} of the running system")

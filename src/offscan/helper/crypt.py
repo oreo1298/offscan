@@ -137,8 +137,9 @@ def dislocker_open(source: str, workdir: str, secret: str, kind: str) -> str:
     finally:
         os.close(master)
     if not os.path.exists(target):
-        raise UnlockError("dislocker could not unlock the volume: "
-                          + output.decode("utf-8", "replace").strip()[-300:])
+        # The terminal may echo what was typed: never put the secret into the message.
+        text = output.replace(secret.encode(), b"***").decode("utf-8", "replace").strip()[-300:]
+        raise UnlockError("dislocker could not unlock the volume: " + text)
     return target
 
 

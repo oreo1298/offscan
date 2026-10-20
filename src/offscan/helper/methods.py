@@ -25,7 +25,7 @@ import tempfile
 import threading
 from typing import Any
 
-from .. import appinfo, privdrop, protocol, sandbox, selftest
+from .. import appinfo, log, privdrop, protocol, sandbox, selftest
 from ..protocol import Param, RemoteError, Schema
 from ..scan.job import ScanError, ScanJob, validate_runtime
 from ..scan.options import ScanOptions
@@ -48,7 +48,7 @@ def _wrap(exc: VolumeError) -> RemoteError:
 
 
 def register(server: Server, manager: VolumeManager, isolated: bool) -> None:
-    jobs: dict[int, ScanJob] = {}
+    jobs: dict[int, ScanJob | None] = {}       # None: a scan that is still mounting
     jobs_lock = threading.Lock()
 
     def info(ctx: Context, p: dict[str, Any]) -> dict[str, Any]:
@@ -62,6 +62,17 @@ def register(server: Server, manager: VolumeManager, isolated: bool) -> None:
                 "tools": report["tools"], "kernel": report["kernel"], "modules": report["modules"]}
 
     def scan_start(ctx: Context, p: dict[str, Any]) -> dict[str, Any]:
+        with jobs_lock:
+            if jobs:
+                raise RemoteError(protocol.BUSY, "a scan is already running")
+            jobs[ctx.req_id] = None             # reserve: one scan at a time
+        try:
+            return _scan(ctx, p)
+        finally:
+            with jobs_lock:
+                jobs.pop(ctx.req_id, None)
+
+    def _scan(ctx: Context, p: dict[str, Any]) -> dict[str, Any]:
         try:
             opts = ScanOptions.from_dict(p["options"])
         except (ValueError, TypeError) as exc:
@@ -96,8 +107,6 @@ def register(server: Server, manager: VolumeManager, isolated: bool) -> None:
         except VolumeError as exc:
             raise _wrap(exc) from exc
         finally:
-            with jobs_lock:
-                jobs.pop(ctx.req_id, None)
             for vol in mounted_here:
                 try:
                     manager.unmount(vol)
@@ -160,6 +169,7 @@ def register(server: Server, manager: VolumeManager, isolated: bool) -> None:
             raise _wrap(exc) from exc
 
     def unlock(ctx: Context, p: dict[str, Any]) -> dict[str, Any]:
+        log.register_secret(p["secret"])          # never in logs or error messages
         try:
             result = manager.unlock(p["volume"], p["secret"], p["secret_kind"])
             if p["keep"]:

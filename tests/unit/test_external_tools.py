@@ -87,9 +87,6 @@ def test_only_root_owned_tools_are_used(tmp_path: Path) -> None:
     assert not external.trusted_binary("/nonexistent/tool")
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(os.geteuid() != 0 or not shutil.which("chkrootkit", path="/usr/sbin:/usr/bin")
-                    or not shutil.which("setpriv"), reason="needs root, setpriv and chkrootkit")
 def injection_names(canary: Path) -> list[str]:
     """File names that create ``canary`` if a shell ever evaluates them (no '/' allowed in names)."""
     octal = str(canary).replace("/", "\\057")
@@ -97,6 +94,9 @@ def injection_names(canary: Path) -> list[str]:
     return [f"x$({make})", f"y`{make}`", f"z;{make};"]
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(os.geteuid() != 0 or not shutil.which("chkrootkit", path="/usr/sbin:/usr/bin")
+                    or not shutil.which("setpriv"), reason="needs root, setpriv and chkrootkit")
 def test_chkrootkit_runs_read_only() -> None:
     import tempfile
     base = Path(tempfile.mkdtemp(dir="/var/tmp"))        # the checker has no capability: it must

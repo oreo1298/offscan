@@ -72,7 +72,19 @@ def runtime_dir() -> Path:
 
 
 def mount_root() -> Path:
+    """Read-only mounts; only root and the invoking user may enter (see helper.acl)."""
     return runtime_dir() / "mnt"
+
+
+def private_root() -> Path:
+    """Root-only mounts: the writable mount of a confirmed change."""
+    return runtime_dir() / "private"
+
+
+def is_our_mount(mountpoint: str) -> bool:
+    """True for mounts this program made (read-only or writable)."""
+    base = str(runtime_dir()).rstrip("/") + "/"
+    return mountpoint.startswith(base)
 
 
 def quarantine_dir() -> Path:

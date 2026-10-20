@@ -21,11 +21,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .. import log, paths, sandbox
+from .. import log, paths, privdrop, sandbox
 from ..drives import hibernation, lsblk, osdetect, superblock, system
 from ..drives.lsblk import BlockDevice
 from ..safefs import RootFS
-from . import blockdev, crypt, lvm, mounting
+from . import acl, blockdev, crypt, lvm, mounting
 from .state import Layer, State, StateStore
 
 logger = log.get("helper.volumes")
@@ -74,6 +74,7 @@ class VolumeManager:
         if not self.store.acquire():
             raise VolumeError("another session of this program is already running", "busy")
         self.state = self.store.load()
+        self._prepare_roots()
         self._drop_vanished_layers()
         stale = [layer.owner for layer in self.state.layers
                  if self._root_owner(layer.owner) not in self.state.keep]
@@ -82,6 +83,21 @@ class VolumeManager:
                 self.teardown(owner)
             except Exception as exc:
                 logger.warning("could not clean up leftover %s: %s", owner, exc)
+
+    def _prepare_roots(self) -> None:
+        """Mount directories: the invoking user may look at read-only mounts, nobody else can."""
+        root = paths.mount_root()
+        paths.ensure_dir(root.parent, 0o755)
+        root.mkdir(mode=0o700, exist_ok=True)
+        viewers = [ident.uid for ident in (privdrop.invoking_user(),) if ident is not None]
+        if not acl.restrict_to(str(root), viewers):
+            # No ACLs on /run (rare): let the user through without listing, and say so.
+            os.chmod(root, 0o711)  # noqa: S103 - fallback without ACL support, logged
+            logger.warning("%s has no ACL support; other local users could open mounted drives by name",
+                           root)
+        private = paths.private_root()
+        private.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(private, 0o700)
 
     def stop(self) -> None:
         """Tear down everything not marked 'keep'."""
@@ -132,12 +148,9 @@ class VolumeManager:
         host: dict[str, list[str]] = {}
         host_rw: set[str] = set()
         from ..drives import mountinfo
-        ours = str(paths.mount_root())
         for entry in mountinfo.read(1):
-            kname = system.kname_for_majmin(entry.majmin)
-            if kname is None and entry.source.startswith("/dev/"):
-                kname = system.kname_for_path(entry.source)      # FUSE (ntfs-3g) mounts
-            if not kname or entry.mountpoint.startswith(ours):
+            kname = system.mount_kname(entry)
+            if not kname or paths.is_our_mount(entry.mountpoint):
                 continue
             host.setdefault(kname, []).append(entry.mountpoint)
             if not entry.readonly:
@@ -145,7 +158,15 @@ class VolumeManager:
             dev = devices.get(kname)
             if dev is not None and not dev.fstype and entry.fstype not in ("fuseblk", "fuse"):
                 dev.fstype = entry.fstype
-        return Snapshot(devices, roots, system.detect(), host, host_rw)
+        sysdevs = system.detect()
+        # The running system's boot partitions, even while they are not mounted (automount):
+        # changing them could stop the computer from starting.
+        system_disks = {devices[k].pkname for k in sysdevs.reasons if k in devices and devices[k].pkname}
+        system_disks |= {k for k in sysdevs.reasons if k in devices and devices[k].type == "disk"}
+        for kname, dev in devices.items():
+            if (dev.parttype or "").lower() in system.BOOT_PARTITION_TYPES and dev.pkname in system_disks:
+                sysdevs.add(kname, "boot partition of the running system")
+        return Snapshot(devices, roots, sysdevs, host, host_rw)
 
     def our_devices(self) -> dict[str, Layer]:
         """kernel name -> layer for loop/dm devices we created."""
@@ -208,7 +229,7 @@ class VolumeManager:
         warnings: list[dict[str, str]] = []
         reason = snap.system.reasons.get(dev.kname)
         host_mounts = [m for m in snap.host_mounts.get(dev.kname, [])
-                       if not m.startswith(str(paths.mount_root()))]
+                       if not paths.is_our_mount(m)]
         if reason:
             warnings.append({"code": "system", "message": f"This volume {reason}. Scanning a "
                              "running system is less reliable, and files may change during the scan."})
@@ -345,7 +366,7 @@ class VolumeManager:
                                   "not a mountable filesystem", "not_permitted")
             target = str(paths.mount_root() / owner.replace(":", "_"))
             host = [m for m in snap.host_mounts.get(kname, [])
-                    if not m.startswith(str(paths.mount_root()))]
+                    if not paths.is_our_mount(m)]
             ours = self.our_devices()
             try:
                 if host:

@@ -100,7 +100,7 @@ def plan(mgr: VolumeManager, kname: str) -> Plan:
     for node in lineage:
         if snap.system.is_system(node):
             raise WritableError("this volume belongs to the running system; change it from the system itself")
-        if [m for m in snap.host_mounts.get(node, []) if not m.startswith(str(paths.mount_root()))]:
+        if [m for m in snap.host_mounts.get(node, []) if not paths.is_our_mount(m)]:
             raise WritableError("this volume is mounted by the computer itself; unmount it there first")
     ours = mgr.our_devices()
     if mgr._host_holders(root, ours):
@@ -276,7 +276,7 @@ def session(mgr: VolumeManager, kname: str,
                                                                      "writable": True}))
                     source = lvm.activate(lv, readonly=False, suffix="-rw")
                 else:
-                    target = str(paths.mount_root() / f"rw-{kname}")
+                    target = str(paths.private_root() / f"rw-{kname}")
                     mgr._add(Layer("mount", target, owner, {"fstype": p.fstype, "writable": True}))
                     result = mounting.mount_writable(source, target, p.fstype)
                     session_obj = Session(target, p, result.driver, result.options)
@@ -287,11 +287,20 @@ def session(mgr: VolumeManager, kname: str,
                                 {"attempts": exc.attempts}) from exc
         finally:
             os.sync()
+            closed = True
             try:
                 mgr.teardown(owner)
             except Exception as exc:
+                closed = False
                 logger.error("could not close the writable session: %s", exc)
-            errors = _rebuild(mgr, p, secrets, stable_to_kname)
+                if session_obj is not None:
+                    mounting.detach(session_obj.mountpoint)
+            if closed:
+                errors = _rebuild(mgr, p, secrets, stable_to_kname)
+            else:
+                # Never put a read-only view next to a writable mount that is still there.
+                errors = ["the writable mount could not be closed normally; it was detached and the "
+                          "read-only view was not rebuilt. Unplug the drive or restart before using it."]
             renamed.update({old: new for old, new in _renames(p, stable_to_kname).items() if old != new})
             if session_obj is not None:
                 session_obj.renamed = renamed

@@ -49,7 +49,12 @@ def helper_command(prefer_sudo: bool = False) -> tuple[list[str], dict[str, str]
         base = [appinfo.HELPER_PATH]
         env = None
     else:
-        # Running from a source checkout (development).
+        # Running from a source checkout (development): root then runs code from a directory
+        # the user can write to, so it has to be asked for explicitly.
+        if os.geteuid() != 0 and not os.environ.get(appinfo.env("DEV_HELPER")):
+            raise HelperStartError(
+                f"the helper is not installed at {appinfo.HELPER_PATH}; install the package, or set "
+                f"{appinfo.env('DEV_HELPER')}=1 to run it from this source checkout (development only)")
         base = [sys.executable, "-m", "offscan.helper"]
         env = {"PYTHONPATH": _dev_checkout_python_path()}
     if os.geteuid() == 0:

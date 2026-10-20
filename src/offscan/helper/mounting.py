@@ -149,7 +149,12 @@ def verify_readonly(target: str) -> mountinfo.MountEntry:
 
 WRITABLE_FSTYPES = ("ext2", "ext3", "ext4", "xfs", "btrfs", "vfat", "exfat", "f2fs", *NTFS_TYPES)
 WRITE_OPTIONS = ("rw", "nosuid", "nodev", "noexec")
-WRITE_EXTRA = {"btrfs": ["subvolid=5"], "xfs": ["nouuid"]}
+# Filesystems without Unix owners get root-only modes (defence in depth: the mount itself
+# is in a root-only directory).
+WRITE_EXTRA = {"btrfs": ["subvolid=5"], "xfs": ["nouuid"],
+               "vfat": ["uid=0", "gid=0", "fmask=0177", "dmask=0077"],
+               "exfat": ["uid=0", "gid=0", "fmask=0177", "dmask=0077"],
+               "ntfs3": ["uid=0", "gid=0", "fmask=0177", "dmask=0077"]}
 
 
 def mount_writable(source: str, target: str, fstype: str) -> MountResult:
@@ -168,7 +173,7 @@ def mount_writable(source: str, target: str, fstype: str) -> MountResult:
     for driver in candidates:
         if driver == "ntfs-3g":
             ntfs3g = tools.require("ntfs-3g")
-            opts = "rw,nosuid,nodev,noexec,norecover,streams_interface=none"
+            opts = "rw,nosuid,nodev,noexec,norecover,streams_interface=none,uid=0,gid=0,umask=077"
             proc = tools.run([ntfs3g, "-o", opts, source, target], timeout=120, check=False)
         else:
             opts = ",".join(flags + WRITE_EXTRA.get(driver, []))
@@ -269,6 +274,13 @@ def umount(target: str, attempts: int = 6) -> None:
         last = proc.stderr.strip()
         time.sleep(0.3 * (i + 1))
     raise MountError(f"could not unmount {target}: {last}")
+
+
+def detach(target: str) -> None:
+    """Last resort when a writable mount cannot be unmounted: remove it from the tree (lazy)."""
+    umount_bin = tools.find("umount")
+    if umount_bin:
+        tools.run([umount_bin, "--lazy", target], timeout=60, check=False)
 
 
 def is_mounted(target: str) -> bool:

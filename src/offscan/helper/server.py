@@ -43,6 +43,9 @@ class Method:
     exclusive: bool = False      # serialise with other exclusive methods
 
 
+MAX_IN_FLIGHT = 64              # requests queued or running at once
+
+
 class Server:
     def __init__(self, reader: BinaryIO, writer: BinaryIO, max_workers: int = 8):
         self.reader = reader
@@ -117,6 +120,9 @@ class Server:
             if req_id in self._jobs:
                 self.send(protocol.response_error(req_id, protocol.INVALID_REQUEST,
                                                   "duplicate request id"))
+                return
+            if len(self._jobs) >= MAX_IN_FLIGHT:
+                self.send(protocol.response_error(req_id, protocol.BUSY, "too many requests at once"))
                 return
             self._jobs[req_id] = ctx
         self._pool.submit(self._run, method, ctx, params)

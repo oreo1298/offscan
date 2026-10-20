@@ -131,7 +131,8 @@ def test_stage_layout(staged: dict) -> None:
     stdlib = next(i for i, p in enumerate(path) if p.endswith(version))
     assert stdlib < vendor
     assert all(not p.endswith("-packages") for p in path[:vendor])
-    sources = {p.relative_to(ROOT / "src").as_posix() for p in (ROOT / "src" / "offscan").rglob("*.py")}
+    sources = {p.relative_to(ROOT / "src").as_posix() for p in build.tracked_files("src/offscan")
+               if p.suffix == ".py"}
     staged_sources = {p.removeprefix(appinfo.PYTHON_DIR + "/") for p in files if p.endswith(".py")
                       and p.startswith(appinfo.PYTHON_DIR)}
     assert sources <= staged_sources

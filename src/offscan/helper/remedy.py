@@ -233,8 +233,10 @@ def restore_file(root: RootFS, entry: dict[str, Any], path: bytes) -> dict[str, 
                     offset += len(chunk)
             if h.hexdigest() != entry["sha256"]:
                 raise RemedyError("the quarantine copy is damaged (SHA-256 differs)")
+            # Never setuid/setgid: a quarantined file must not come back with more power.
+            mode = stat.S_IMODE(entry["mode"]) & ~(stat.S_ISUID | stat.S_ISGID)
             for call in (lambda: os.fchown(out, entry["uid"], entry["gid"]),
-                         lambda: os.fchmod(out, stat.S_IMODE(entry["mode"])),
+                         lambda: os.fchmod(out, mode),
                          lambda: os.utime(out, (entry["mtime"], entry["mtime"]))):
                 try:
                     call()
@@ -303,24 +305,22 @@ def register(server: Server, manager: VolumeManager, jobs: dict[int, Any]) -> No
         return mountpoint
 
     def plan(ctx: Context, p: dict[str, Any]) -> dict[str, Any]:
-        info: dict[str, Any] = {}
+        result: dict[str, Any] = {"volume": p["volume"], "path": p["path"]}
+        try:
+            wp = writable.plan(manager, p["volume"])
+        except (writable.WritableError, VolumeError) as exc:
+            # Nothing about the file is reported for volumes we would not change (the
+            # running system, the host's own mounts): this is not a way to read them.
+            result.update(possible=False, reason=str(exc))
+            return result
         try:
             if p["path"] is not None:                 # without a path: only "can this volume be changed?"
                 with RootFS(readonly_root(p["volume"])) as root:
-                    info = inspect(root, names.from_wire(p["path"]))
+                    result.update(inspect(root, names.from_wire(p["path"])))
         except RemedyError as exc:
             raise RemoteError(exc.code, str(exc)) from exc
         except VolumeError as exc:
             raise RemoteError(exc.code, str(exc)) from exc
-        result: dict[str, Any] = {"volume": p["volume"], "path": p["path"], **info}
-        try:
-            wp = writable.plan(manager, p["volume"])
-        except writable.WritableError as exc:
-            result.update(possible=False, reason=str(exc))
-            return result
-        except VolumeError as exc:
-            result.update(possible=False, reason=str(exc))
-            return result
         result.update(possible=True, fstype=wp.fstype, needs_secret=wp.needs_secret, notes=wp.notes,
                       replay_journal=wp.replay_journal,
                       remounts=[m["stable"] for m in wp.restore["mounts"]])
@@ -390,6 +390,22 @@ def register(server: Server, manager: VolumeManager, jobs: dict[int, Any]) -> No
 
         return run_change(p["volume"], _secrets(p.get("secrets")), action, work, precheck)
 
+    def same_filesystem(entry: dict[str, Any], volume: str) -> None:
+        """A quarantined file only goes back to the filesystem it was taken from."""
+        try:
+            wp = writable.plan(manager, volume)
+            dev = manager.resolve(wp.root)[0] if wp.root else None
+        except (writable.WritableError, VolumeError):
+            return                     # run_change refuses with the real reason
+        expected, actual = entry.get("uuid"), dev.uuid if dev else None
+        if expected and actual == expected:
+            return
+        if not expected and volume == entry.get("volume"):
+            return
+        raise RemoteError(protocol.NOT_PERMITTED,
+                          "a quarantined file can only be restored to the filesystem it came from "
+                          f"({entry.get('volume')}, UUID {expected or 'unknown'})")
+
     def restore(ctx: Context, p: dict[str, Any]) -> dict[str, Any]:
         if p["confirm"] is not True:
             raise RemoteError(protocol.INVALID_PARAMS, "changes need confirm: true")
@@ -400,6 +416,7 @@ def register(server: Server, manager: VolumeManager, jobs: dict[int, Any]) -> No
         target = p.get("path") or entry["path"]
         if not _path(target):
             raise RemoteError(protocol.INVALID_PARAMS, "invalid path")
+        same_filesystem(entry, p["volume"])
 
         def work(root: RootFS, record: dict[str, Any]) -> dict[str, Any]:
             return {**restore_file(root, entry, names.from_wire(target)), "quarantine_id": entry["id"]}

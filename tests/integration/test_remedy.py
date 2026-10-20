@@ -117,6 +117,38 @@ def test_quarantine_restore_delete(ext4_image: Path, no_leaks, helper, helper_en
     assert proc.returncode == 0, proc.stdout.decode()[-2000:]
 
 
+def test_restore_goes_back_only_where_it_came_from(tmp_path: Path, no_leaks, helper) -> None:
+    """A quarantined file cannot be planted on another filesystem, and loses setuid/setgid."""
+    require("mkfs.ext4")
+    imgs = []
+    for name in ("a", "b"):
+        src = tmp_path / f"src-{name}"
+        (src / "bin").mkdir(parents=True)
+        (src / "bin/tool").write_bytes(images.eicar())
+        os.chmod(src / "bin/tool", 0o6755)
+        img = tmp_path / f"{name}.img"
+        with open(img, "wb") as fh:
+            fh.truncate(32 << 20)
+        images.run("mkfs.ext4", "-q", "-F", "-d", str(src), str(img))
+        imgs.append(img)
+    with images.attached(imgs[0]) as dev_a, images.attached(imgs[1]) as dev_b:
+        vol_a, vol_b = _volume(helper, dev_a), _volume(helper, dev_b)
+        record = _apply(helper, vol_a, "/bin/tool", "quarantine")
+        before_b = images.sha256(imgs[1])
+        with pytest.raises(RemoteError) as err:
+            helper.call("quarantine.restore", {"id": record["quarantine_id"], "volume": vol_b,
+                                               "path": "/bin/planted", "confirm": True}, timeout=300)
+        assert err.value.code == "not_permitted" and "came from" in err.value.message
+        assert images.sha256(imgs[1]) == before_b, "the other filesystem was touched"
+        restored = helper.call("quarantine.restore", {"id": record["quarantine_id"], "volume": vol_a,
+                                                      "confirm": True}, timeout=300)
+        assert restored["result"] == "ok"
+        with RootFS(helper.call("volume.mount", {"volume": vol_a}, timeout=120)["mountpoint"]) as fs:
+            mode = fs.lstat("/bin/tool").st_mode
+        assert stat.S_IMODE(mode) == 0o755                      # setuid and setgid are gone
+        helper.call("volume.unmount", {"volume": vol_a}, timeout=120)
+
+
 def test_hibernated_windows_is_refused(target_disk, helper) -> None:
     dev, _ = target_disk
     disk = find_disk(helper.call("drives.list", {"probe": "none"})["disks"], dev)
