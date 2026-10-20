@@ -2,6 +2,8 @@ name: packages
 
 # Builds the .deb, the Fedora and openSUSE .rpm and the Arch package, then
 # installs, upgrades and removes them (and install.sh) in each distribution.
+# A pushed v* tag, or a manual run with "release" set, then publishes a
+# GitHub release (see docs/releasing.md).
 
 on:
   push:
@@ -9,6 +11,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish this version as a release, tagging the commit (must equal VERSION, e.g. 0.1.0)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -47,6 +54,8 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true      # dist/arch/.SRCINFO
       - name: Release files (x86_64 and aarch64)
+        env:
+          RELEASE: ${{ inputs.release }}
         run: |
           version=$(python3 packaging/build.py version pep440)
           tarball=$(ls dist/*.tar.gz)
@@ -61,8 +70,8 @@ jobs:
             --url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$version/$(basename "$tarball")"
           tar -czf "release/$name-$version-aur.tar.gz" -C aur PKGBUILD .SRCINFO "$name.install"
           (cd release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
-          # Release notes come from CHANGELOG.md; only a tagged version has its own section.
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
+          # Release notes come from CHANGELOG.md; only a released version has its own section.
+          if [ "$GITHUB_REF_TYPE" = tag ] || [ -n "$RELEASE" ]; then
             python3 packaging/build.py notes > release-notes.md
           else
             echo "Development build of $version (not a release)." > release-notes.md
@@ -104,8 +113,8 @@ jobs:
         run: tests/packaging/run-containers.sh run "${{ matrix.image }}" "${{ matrix.mode }}"
 
   release:
-    # Tags only, and only after every install test passed.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A v* tag or a manual release run, and only after every install test passed.
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release != '')
     needs: [build, install]
     runs-on: ubuntu-24.04
     permissions:
@@ -118,11 +127,24 @@ jobs:
         with:
           name: release
           path: out
-      - name: The tag must match the version in appinfo
-        run: test "v$(python3 packaging/build.py version pep440)" = "$GITHUB_REF_NAME"
+      - name: The release must match the version in appinfo
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          version=$(python3 packaging/build.py version pep440)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            test "v$version" = "$GITHUB_REF_NAME"
+          else
+            test "$version" = "$RELEASE"
+          fi
+          echo "TAG=v$version" >> "$GITHUB_ENV"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file out/release-notes.md out/release/*
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            set -- --verify-tag
+          else
+            set -- --target "$GITHUB_SHA"      # tags the commit this run built and tested
+          fi
+          gh release create "$TAG" "$@" --title "$TAG" --notes-file out/release-notes.md out/release/*

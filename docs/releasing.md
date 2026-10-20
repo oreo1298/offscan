@@ -20,6 +20,11 @@
    * `SHA256SUMS`.
 
    The release job checks that the tag matches `VERSION`.
+
+   Without push access for tags, start the `packages` workflow by hand instead
+   (Actions > packages > Run workflow) on the branch, with `release` set to the
+   version, e.g. `0.1.0`. It runs the same tests, then creates the `v0.1.0` tag
+   on the commit it tested and publishes the same release.
 4. **AUR:** unpack `<name>-<version>-aur.tar.gz` into your clone of the AUR
    repository (`ssh://aur@aur.archlinux.org/offscan.git`), then run:
 
