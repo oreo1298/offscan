@@ -89,7 +89,9 @@ class VolumeManager:
         root = paths.mount_root()
         paths.ensure_dir(root.parent, 0o755)
         root.mkdir(mode=0o700, exist_ok=True)
-        viewers = [ident.uid for ident in (privdrop.invoking_user(),) if ident is not None]
+        # The user (to browse a mounted drive) and the scan account (external checkers read paths).
+        viewers = [ident.uid for ident in (privdrop.invoking_user(), privdrop.worker_identity())
+                   if ident is not None]
         if not acl.restrict_to(str(root), viewers):
             # No ACLs on /run (rare): let the user through without listing, and say so.
             os.chmod(root, 0o711)  # noqa: S103 - fallback without ACL support, logged

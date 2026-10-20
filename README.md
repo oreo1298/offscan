@@ -21,6 +21,8 @@ your computer, or on your computer's own disks after booting from a live USB sti
 * **A window and a command line** with the same features. The window follows your desktop's
   light/dark scheme, accent colour, fonts and icons.
 * **No telemetry.** The app uses the network only to update definitions.
+* **Built for hostile drives.** Parsers and engines run as an unprivileged system account
+  with no network, and only you can open the mounted drives ([security design](docs/security.md)).
 * **Not a real-time scanner.** There is no resident daemon and no on-access protection.
 
 > Status: pre-release (0.1.0.dev0). The packages below are built by CI for every commit;
@@ -126,6 +128,7 @@ each other.
 | `/usr/share/applications`, `/usr/share/metainfo`, `/usr/share/icons/hicolor/scalable/apps` | menu entry, AppStream data, icon |
 | `/usr/share/man/man1/offscan.1.gz`, `offscan-gui.1.gz` | manual pages |
 | `/usr/share/doc/offscan`, `/usr/share/licenses/offscan` | documentation, licence and third-party notices |
+| `/usr/lib/sysusers.d/offscan.conf` | the `offscan` system account (no home, no login) the scanners run as |
 
 The program creates these at run time:
 
@@ -163,7 +166,9 @@ changed after installation. It then asks, one at a time, whether to delete the q
 change log, your definitions, history and reports, and settings and logs. The answer defaults
 to no.
 
-The package managers never delete the quarantine or the change log. A quarantined file can only
+The `offscan` system account stays, as accounts made by packages usually do; remove it with
+`sudo userdel offscan` if you like. The package managers never delete the quarantine or the
+change log. A quarantined file can only
 be put back from there, so delete `/var/lib/offscan` by hand when you no longer need them. Your
 own data in `~/.local/share/offscan`, `~/.config/offscan`, `~/.cache/offscan` and
 `~/.local/state/offscan` also stays until you delete it.
@@ -318,7 +323,7 @@ sudo -E .venv/bin/pytest -m integration           # loop-device images with EICA
 .venv/bin/python -m offscan.gui.app               # the window, from the checkout
 ```
 
-Tests never use real malware. They use the EICAR test string and generated NTFS and ext4
+Security reports: see [SECURITY.md](SECURITY.md). Tests never use real malware. They use the EICAR test string and generated NTFS and ext4
 images with fake Run keys, a fake cron backdoor and a modified package file. Design notes are
 in [docs/plan.md](docs/plan.md) and [docs/research.md](docs/research.md), and the helper protocol
 is in [docs/protocol.md](docs/protocol.md).

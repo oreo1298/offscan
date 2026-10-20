@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import queue
-import stat
 import threading
 import time
 from collections.abc import Callable
@@ -37,26 +36,6 @@ class ScanError(Exception):
     def __init__(self, message: str, code: str = "failed"):
         super().__init__(message)
         self.code = code
-
-
-def validate_runtime(path: str, identity: privdrop.Identity | None) -> Path:
-    """The runtime dir is prepared by the (unprivileged) client; check it is safe to use.
-
-    The helper never reads or writes inside it; it only passes the path to
-    processes that run as the scan identity.
-    """
-    if not path or not os.path.isabs(path) or "\0" in path:
-        raise ScanError("invalid runtime directory", "invalid_params")
-    real = os.path.realpath(path)
-    if real != os.path.normpath(path) or not real.startswith("/tmp/"):
-        raise ScanError("runtime directory must be a real directory under /tmp", "invalid_params")
-    st = os.lstat(real)
-    if not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o077:
-        raise ScanError("runtime directory must be a private (0700) directory", "invalid_params")
-    expected = identity.uid if identity is not None else os.geteuid()
-    if st.st_uid != expected:
-        raise ScanError("runtime directory is not owned by the scanning user", "not_permitted")
-    return Path(real)
 
 
 class ScanJob:

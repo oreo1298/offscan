@@ -56,11 +56,27 @@ def nobody() -> Identity:
     return Identity(65534, 65534, "nobody", "/")
 
 
+def scan_account() -> Identity | None:
+    """The dedicated system account for scanning, if it exists (see appinfo.SCAN_USER)."""
+    from . import appinfo
+    try:
+        pw = pwd.getpwnam(appinfo.SCAN_USER)
+    except KeyError:
+        return None
+    if pw.pw_uid == 0:
+        return None
+    return Identity(pw.pw_uid, pw.pw_gid, pw.pw_name, "/")
+
+
 def worker_identity() -> Identity | None:
-    """Identity for sandboxed children; ``None`` when we cannot change uid."""
+    """Identity for everything that touches hostile data; ``None`` when we cannot change uid.
+
+    Never the desktop user: a parser or engine compromised by a crafted file
+    must not get the user's files, session bus or display.
+    """
     if os.geteuid() != 0:
         return None
-    return invoking_user() or nobody()
+    return scan_account() or nobody()
 
 
 def raise_open_files_limit() -> int:

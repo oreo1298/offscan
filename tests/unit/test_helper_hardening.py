@@ -82,3 +82,50 @@ def test_automounted_esp_counts_as_system(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert system._fstab_kname("/boot/efi", str(fstab)) == "nvme0n1p1"
     assert seen == ["/dev/disk/by-uuid/1234-ABCD"]
     assert system._fstab_kname("/home", str(fstab)) is None
+
+
+def _definition_set(base: Path) -> Path:
+    import json
+    set_dir = base / "set"
+    (set_dir / "hashes").mkdir(parents=True)
+    (set_dir / "hashes" / "malware.ofh").write_bytes(b"\0" * 32)
+    (set_dir / "yara").mkdir()
+    (set_dir / "manifest.json").write_text(json.dumps(
+        {"clamav": {"files": []}, "yara": {}, "hashes": {"malware": ["malware.ofh"]}}))
+    return set_dir
+
+
+def test_runtime_is_built_only_from_the_users_own_files(tmp_path: Path) -> None:
+    import json
+
+    from offscan.scan import runtime
+    from offscan.scan.options import ScanOptions
+    opts = ScanOptions(volumes=["x"])
+    me = os.geteuid()
+    set_dir = _definition_set(tmp_path)
+    rt = runtime.prepare(set_dir, opts, me, os.getegid(), base=str(tmp_path), owner_uid=me)
+    assert (rt / "hashes" / "malware.ofh").read_bytes() == b"\0" * 32
+    runtime.cleanup(rt)
+    with pytest.raises(runtime.RuntimeSetupError, match="does not belong"):
+        runtime.prepare(set_dir, opts, me, os.getegid(), base=str(tmp_path), owner_uid=me + 1)
+    # A name with a path in it, or a file that is a symbolic link, is refused.
+    manifest = json.loads((set_dir / "manifest.json").read_text())
+    manifest["hashes"]["malware"] = ["../../../etc/shadow"]
+    (set_dir / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(runtime.RuntimeSetupError, match="unsafe file name"):
+        runtime.prepare(set_dir, opts, me, os.getegid(), base=str(tmp_path), owner_uid=me)
+    manifest["hashes"]["malware"] = ["linked.ofh"]
+    (set_dir / "manifest.json").write_text(json.dumps(manifest))
+    (set_dir / "hashes" / "linked.ofh").symlink_to("/etc/hostname")
+    with pytest.raises(runtime.RuntimeSetupError):
+        runtime.prepare(set_dir, opts, me, os.getegid(), base=str(tmp_path), owner_uid=me)
+    assert not list(tmp_path.glob("*-scan-*"))           # nothing left behind after a refusal
+
+
+def test_scanners_never_run_as_the_desktop_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    from offscan import privdrop
+    monkeypatch.setenv("PKEXEC_UID", "1000")
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    ident = privdrop.worker_identity()
+    assert ident is not None and ident.uid != 1000
+    assert ident.uid == (privdrop.scan_account() or privdrop.nobody()).uid

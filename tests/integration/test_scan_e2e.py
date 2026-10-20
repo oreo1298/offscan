@@ -67,7 +67,8 @@ def test_scan_dirty_disk_all_engines(target_disk, helper, test_defs, tmp_path) -
     assert _engines_found(session.detections, "/users/alice/downloads/eicar.com") == expected
     kinds = {e for e, _ in events}
     assert {"scan.progress", "scan.detection", "scan.status"} <= kinds
-    assert not os.path.exists(session.options.runtime_dir), "runtime dir not cleaned up"
+    from offscan import appinfo
+    assert not list(Path("/tmp").glob(f"{appinfo.NAME}-scan-*")), "runtime dir not cleaned up"
     # History and reports.
     (record,) = history.scans()
     counted = record["summary"]["detections"] + record["summary"]["inventory"]

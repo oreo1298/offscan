@@ -9,7 +9,7 @@ The research behind these decisions is in `docs/research.md`.
 | Language / UI | Python ≥ 3.11, Qt 6 Widgets through a shim: PySide6 preferred, PyQt6 fallback (`offscan.gui.qt`) |
 | Distros | Arch and derivatives; Debian 13 (12 best effort); Ubuntu 24.04/26.04, Mint 22/23, LMDE 7; Fedora 43–45; openSUSE Tumbleweed and Leap 16.0 |
 | Privilege | Root helper launched by pkexec on demand (JSON lines over stdio). Run directly when already root; `sudo` fallback when no polkit agent |
-| Workers | Scan workers and clamd run unprivileged as the invoking user; the helper passes file descriptors to the workers; the scan side has no network namespace |
+| Workers | Scan workers, clamd, the parsing sandbox and external checkers run as a dedicated system account (`offscan`, created from sysusers.d; `nobody` as a fallback), never as the desktop user. The helper builds their runtime directory itself from the user's definition set and passes file descriptors to the workers; nothing on the scan side has network access (M7 change: it was the invoking user before) |
 | ClamAV | Private on-demand clamd (config and socket in a 0700 `/tmp` runtime dir, files streamed with INSTREAM; AppArmor-compatible). Official DB from the system freshclam where one runs (always on Debian/Ubuntu), otherwise a private freshclam |
 | Debian/Ubuntu deps | Depends `clamav`, `clamav-freshclam`; Recommends `clamav-daemon` |
 | YARA | YARA-X (vendored abi3 wheel in `/usr/lib/offscan/vendor`); distro yara-python as fallback |

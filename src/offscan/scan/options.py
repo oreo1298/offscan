@@ -45,7 +45,8 @@ class ScanOptions:
     limits: Limits = field(default_factory=Limits)
     workers: int = 0                                         # 0 = automatic
     detect_pua: bool = False
-    runtime_dir: str = ""                                    # prepared by the client
+    definitions: str = ""                                    # the client's definition set (a directory)
+    runtime_dir: str = ""                                    # built by the helper; never from the client
     persistence: bool = True                                 # autostart/persistence checks
     integrity: bool = True                                   # package verification, unowned files
     tools: list[str] = field(default_factory=list)          # optional external tools (opt-in)
@@ -65,6 +66,8 @@ class ScanOptions:
         for path in self.paths:
             if "\0" in path or len(path) > 4096:
                 raise ValueError("invalid path")
+        if "\0" in self.definitions or len(self.definitions) > 4096:
+            raise ValueError("invalid definitions directory")
         unknown_tools = set(self.tools) - set(TOOLS)
         if unknown_tools:
             raise ValueError(f"unknown tools: {sorted(unknown_tools)}")
@@ -92,7 +95,7 @@ class ScanOptions:
             limits=limits,
             workers=int(data.get("workers") or 0),
             detect_pua=bool(data.get("detect_pua", False)),
-            runtime_dir=str(data.get("runtime_dir", "")),
+            definitions=str(data.get("definitions", "")),
             persistence=bool(data.get("persistence", True)),
             integrity=bool(data.get("integrity", True)),
             tools=[str(t) for t in data.get("tools") or []],

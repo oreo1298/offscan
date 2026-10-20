@@ -75,7 +75,7 @@ OWN_PATHS=(
     "/usr/share/polkit-1/actions/$APP_ID.policy"
     "/usr/share/applications/$APP_ID.desktop" "/usr/share/metainfo/$APP_ID.metainfo.xml"
     "/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg" "/usr/share/man/man1/$NAME.1.gz"
-    "/usr/share/man/man1/$GUI.1.gz"
+    "/usr/share/man/man1/$GUI.1.gz" "/usr/lib/sysusers.d/$NAME.conf"
 )
 # Debian packages keep licence texts in /usr/share/doc/<package>/copyright.
 if [ "$mode" = script ] || [ "$family" != deb ]; then
@@ -146,6 +146,8 @@ smoke() {
     "$GUI" --self-check | tee /tmp/self-check.txt
     grep -q "self-check: OK" /tmp/self-check.txt || fail "$GUI --self-check"
     [ -x "/usr/lib/$NAME/$NAME-helper" ] || fail "helper missing"
+    # appinfo.SCAN_USER is NAME: the scanners' system account
+    getent passwd "$NAME" >/dev/null || fail "the scan account $NAME was not created"
     for path in "${OWN_PATHS[@]}"; do
         [ -e "$path" ] || fail "missing $path"
     done

@@ -34,6 +34,9 @@ GUI_NAME = f"{NAME}-gui"
 POLKIT_ACTION = f"{APP_ID}.helper"
 ICON_NAME = APP_ID
 DESKTOP_FILE = f"{APP_ID}.desktop"
+# System account the scanners (workers, clamd, parsers, external checkers) run as,
+# created by the packages (sysusers.d) and install.sh; "nobody" if it is missing.
+SCAN_USER = NAME
 
 LIB_DIR = f"/usr/lib/{NAME}"
 PYTHON_DIR = f"{LIB_DIR}/python"

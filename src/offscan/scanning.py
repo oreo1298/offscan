@@ -12,7 +12,6 @@ from .client import HelperClient
 from .defs import layout, store
 from .history import History
 from .protocol import RemoteError
-from .scan import runtime
 from .scan.options import ScanOptions
 from .scan.results import Detection
 
@@ -33,7 +32,6 @@ class ScanSession:
         self.summary: dict[str, Any] | None = None
         self.scan_id: int | None = None
         self.job: int | None = None
-        self.runtime: Path | None = None
         self.targets: list[dict[str, Any]] = []
         self.definitions: dict[str, Any] = {}
         self._done = threading.Event()
@@ -58,9 +56,8 @@ class ScanSession:
         manifest = layout.load_manifest(set_dir)
         self.definitions = {"set": manifest.get("id"), "created": manifest.get("created"),
                             "sources": {k: v.get("version") for k, v in manifest.get("sources", {}).items()}}
-        info = self.client.call("helper.info", timeout=60)
-        self.runtime = runtime.prepare(set_dir, self.options, int(info["scan_uid"]), int(info["scan_gid"]))
-        self.options.runtime_dir = str(self.runtime)
+        # The helper builds the engines' private directory from this set itself.
+        self.options.definitions = str(Path(set_dir).resolve())
 
     def _describe_targets(self) -> None:
         try:
@@ -103,9 +100,6 @@ class ScanSession:
         threading.Thread(target=worker, name="scan-session", daemon=True).start()
 
     def _finish(self) -> None:
-        if self.runtime is not None:
-            runtime.cleanup(self.runtime)
-            self.runtime = None
         if self.history is not None and self.summary is not None:
             try:
                 self.scan_id = self.history.add_scan(self.summary, self.options.to_dict(), self.targets,

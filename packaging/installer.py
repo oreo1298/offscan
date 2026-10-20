@@ -627,7 +627,23 @@ class Installer:
 
     # -------------------------------------------------------------- caches
 
+    def _create_account(self) -> None:
+        """The system account the scanners run as (kept on uninstall, like packages do)."""
+        name = self.info["SCAN_USER"]
+        conf = f"/usr/lib/sysusers.d/{self.info['NAME']}.conf"
+        if shutil.which("systemd-sysusers"):
+            self.run(["systemd-sysusers", conf])
+        try:
+            pwd.getpwnam(name)
+        except KeyError:
+            nologin = next((p for p in ("/usr/sbin/nologin", "/sbin/nologin", "/usr/bin/nologin")
+                            if os.path.exists(p)), "/bin/false")
+            self.run(["useradd", "--system", "--no-create-home", "--home-dir", "/", "--shell", nologin,
+                      "--user-group", name])
+
     def _after_change(self, compile_python: bool) -> None:
+        if compile_python and self.system:
+            self._create_account()
         if compile_python:
             for directory in (self.info["PYTHON_DIR"], self.info["VENDOR_DIR"]):
                 target = self.layout.path(directory)

@@ -126,7 +126,9 @@ def test_sandbox_drops_privileges_and_network(helper) -> None:
     hello = helper.hello
     assert hello["network_isolated"] is True
     result = helper.call("helper.sandbox_check", timeout=60)
-    assert result["uid"] != 0
+    from offscan import privdrop
+    expected = privdrop.scan_account() or privdrop.nobody()
+    assert result["uid"] == expected.uid                # the scan account, never root or the user
     assert result["no_network"] is True
     assert result["data"] == ["sandbox-ok"]
 

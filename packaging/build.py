@@ -61,7 +61,7 @@ ARCHES = {
     "aarch64": {"deb": "arm64", "rpm": "aarch64", "nfpm": "arm64"},
 }
 ARCH_ALIASES = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}
-DOCS = ("README.md", "docs/checks.md", "docs/remediation.md")
+DOCS = ("README.md", "CHANGELOG.md", "docs/checks.md", "docs/remediation.md", "docs/security.md")
 LICENSE_RE = re.compile(r"(?i)^(licen[cs]e|copying|notice|authors)([.-].*)?$")
 MAX_WHEEL = 100 << 20
 
@@ -473,6 +473,7 @@ def stage(dest: Path, flavor: str, arch: str, wheels: dict[str, Path] | None,
         tree.write(f"{doc_dir}/THIRD-PARTY.md", third_party_notice(info, licences).encode())
 
     for template, target in (
+            ("sysusers.conf.in", f"/usr/lib/sysusers.d/{name}.conf"),
             ("polkit.policy.in", f"/usr/share/polkit-1/actions/{info['APP_ID']}.policy"),
             ("desktop.in", f"/usr/share/applications/{info['DESKTOP_FILE']}"),
             ("metainfo.xml.in", f"/usr/share/metainfo/{info['APP_ID']}.metainfo.xml")):

@@ -23,11 +23,13 @@ import os
 import re
 import tempfile
 import threading
+from pathlib import Path
 from typing import Any
 
 from .. import appinfo, log, privdrop, protocol, sandbox, selftest
 from ..protocol import Param, RemoteError, Schema
-from ..scan.job import ScanError, ScanJob, validate_runtime
+from ..scan import runtime
+from ..scan.job import ScanJob
 from ..scan.options import ScanOptions
 from .server import Context, Server
 from .volumes import VolumeError, VolumeManager
@@ -78,12 +80,23 @@ def register(server: Server, manager: VolumeManager, isolated: bool) -> None:
         except (ValueError, TypeError) as exc:
             raise RemoteError(protocol.INVALID_PARAMS, str(exc)) from exc
         identity = privdrop.worker_identity()
+        if not opts.definitions or not os.path.isabs(opts.definitions):
+            raise RemoteError(protocol.INVALID_PARAMS, "the scan needs a definition set")
+        user = privdrop.invoking_user()
         try:
-            validate_runtime(opts.runtime_dir, identity)
-        except ScanError as exc:
-            raise RemoteError(exc.code, str(exc)) from exc
-        except OSError as exc:
-            raise RemoteError(protocol.INVALID_PARAMS, f"runtime directory: {exc}") from exc
+            rt = runtime.prepare(Path(opts.definitions), opts,
+                                 identity.uid if identity else os.geteuid(),
+                                 identity.gid if identity else os.getegid(),
+                                 owner_uid=user.uid if user is not None and os.geteuid() == 0 else None)
+        except (runtime.RuntimeSetupError, OSError, ValueError, KeyError) as exc:
+            raise RemoteError(protocol.INVALID_PARAMS, f"cannot use the definitions: {exc}") from exc
+        opts.runtime_dir = str(rt)
+        try:
+            return _scan_with(ctx, opts, identity)
+        finally:
+            runtime.cleanup(rt)
+
+    def _scan_with(ctx: Context, opts: ScanOptions, identity: privdrop.Identity | None) -> dict[str, Any]:
         mounts: dict[str, str] = {}
         mounted_here: list[str] = []
         volume_info: list[dict[str, Any]] = []
