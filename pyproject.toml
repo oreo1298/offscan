@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# The distribution name must match offscan.appinfo.NAME (checked by tests;
+# tools/rename.py keeps them in sync).
+name = "offscan"
+dynamic = ["version"]
+description = "Offline drive malware scanner"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+# Runtime dependencies are provided by the distribution packages (see
+# packaging/); the extras below are for development and the venv fallback.
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PySide6-Essentials>=6.4"]
+engines = ["yara-x>=1.0"]
+windows = ["regipy>=5.0", "pefile>=2023.2.7"]
+bundles = ["cryptography>=38"]
+full = [
+    "PySide6-Essentials>=6.4", "yara-x>=1.0", "regipy>=5.0",
+    "pefile>=2023.2.7", "cryptography>=38",
+]
+dev = [
+    "PySide6-Essentials>=6.4", "yara-x>=1.0", "regipy>=5.0",
+    "pefile>=2023.2.7", "cryptography>=38",
+    "pytest>=7.4", "pytest-qt>=4.3", "pytest-timeout>=2.1", "hypothesis>=6", "ruff>=0.5",
+]
+
+[project.scripts]
+offscan = "offscan.cli.main:main"
+
+[project.gui-scripts]
+offscan-gui = "offscan.gui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/oreo1298/offscan"
+
+[tool.setuptools.dynamic]
+version = { attr = "offscan.appinfo.VERSION" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+offscan = ["data/*", "data/**/*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "S", "N", "RUF"]
+ignore = [
+    "S603",   # subprocess without shell: we always pass argument lists
+    "S607",   # partial executable path: tools.run() enforces absolute paths
+    "S101",   # assert is fine in tests and internal invariants
+    "S108",   # /tmp paths are deliberate (AppArmor-compatible clamd runtime dir)
+    "RUF001", "RUF002", "RUF003",  # we deliberately handle confusable characters
+    "RUF012",
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "N802", "N806"]
+"src/offscan/__init__.py" = ["N811"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+timeout = 300
+markers = [
+    "integration: needs root, loop devices and filesystem tools (run with sudo)",
+    "devmapper: needs device-mapper (LUKS/LVM/BitLocker)",
+    "gui: needs a Qt binding (runs offscreen)",
+    "slow: takes more than a few seconds",
+    "clamav: needs ClamAV (clamd, clamscan, sigtool)",
+    "container: builds and installs packages inside distro containers",
+]
