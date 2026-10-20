@@ -1,0 +1,19 @@
+# Generated from packaging/templates/pacman.install.in; do not edit.
+# (pacman's systemd hook creates the account from sysusers.d; this covers systems without it.)
+post_install() {
+    if ! getent passwd @SCAN_USER@ >/dev/null 2>&1; then
+        useradd --system --no-create-home --home-dir / --shell /usr/bin/nologin --user-group \
+            @SCAN_USER@ >/dev/null 2>&1 || true
+    fi
+}
+
+post_upgrade() {
+    post_install
+}
+
+post_remove() {
+    if [ -d "@SYSTEM_STATE_DIR@" ]; then
+        echo "Kept @SYSTEM_STATE_DIR@ (quarantined files and the change log of drive changes)."
+        echo "Delete it by hand when you no longer need them."
+    fi
+}

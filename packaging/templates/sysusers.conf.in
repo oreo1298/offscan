@@ -1,0 +1,4 @@
+# Generated from packaging/templates/sysusers.conf.in; do not edit.
+# The account ${DISPLAY_NAME}'s scanners run as: they read files from the drives being
+# scanned, so they must not run as the desktop user. No home, no login.
+u ${SCAN_USER} - "${DISPLAY_NAME} scanners" - -

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Generated from packaging/templates/scripts/preinstall.sh.in; do not edit.
+# A copy installed by install.sh owns the same files; refuse to mix the two.
+if [ -e "@SYSTEM_STATE_DIR@/install-manifest.json" ]; then
+    echo "@DISPLAY_NAME@ was installed with install.sh. Remove that copy first, keeping your data:" >&2
+    echo "    sudo ./install.sh --uninstall --keep-data" >&2
+    exit 1
+fi
+exit 0

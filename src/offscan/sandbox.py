@@ -1,0 +1,217 @@
+"""Run parsers of hostile data in an unprivileged, resource-limited child.
+
+The root helper opens target files itself (safely, read-only) and hands
+the file descriptors to a fresh Python process that runs as the scan
+account (or ``nobody``), with ``no_new_privs``, no network (inherited empty
+namespace), memory/CPU/file-size limits and no core dumps.  The child gets
+a task name from an allow-list, JSON arguments and the fds; it answers with
+one JSON document on stdout.
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+import os
+import selectors
+import subprocess
+import sys
+import time
+from typing import Any
+
+from . import appinfo, privdrop
+
+# task name -> "module:function" (only offscan modules are allowed)
+TASKS: dict[str, str] = {
+    "windows.version": "offscan.drives.osdetect:task_windows_version",
+    "windows.persistence": "offscan.persistence.windows:task_persistence",
+    "linux.persistence": "offscan.persistence.linux:task_persistence",
+    "packages.list": "offscan.persistence.packages:task_list",
+    "selftest.echo": "offscan.sandbox:task_echo",
+}
+
+DEFAULT_LIMITS = {"memory": 2 << 30, "cpu_seconds": 120, "file_size": 0, "open_files": 256}
+
+# Per-task overrides: hive log replay writes a private temporary copy, and
+# persistence tasks receive many descriptors (task XML, cron files, ...).
+TASK_LIMITS: dict[str, dict[str, int]] = {
+    "windows.version": {"file_size": 2 << 30},
+    "windows.persistence": {"file_size": 2 << 30, "open_files": 8192, "cpu_seconds": 600},
+    "linux.persistence": {"open_files": 8192, "cpu_seconds": 300},
+    "packages.list": {"file_size": 2 << 30, "cpu_seconds": 600, "open_files": 1024},
+}
+
+_BOOT = (
+    "import json,sys\n"
+    "sys.path[:0]=json.loads(sys.argv[1])\n"
+    "from offscan.sandbox import child_main\n"
+    "child_main()\n"
+)
+
+
+class SandboxError(Exception):
+    pass
+
+
+def _package_paths() -> list[str]:
+    import offscan
+    pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(offscan.__file__)))
+    out = [pkg_parent]
+    # Vendored wheels (yara-x, regipy) live next to the installed package.
+    if os.path.isdir(appinfo.VENDOR_DIR):
+        out.append(appinfo.VENDOR_DIR)
+    for entry in sys.path:
+        # Keep the interpreter's own site dirs only (they are implicit with -I);
+        # add dev-venv site-packages so tests work from a checkout.
+        if entry.endswith("site-packages") and entry.startswith(sys.prefix):
+            out.append(entry)
+    return out
+
+
+_PROBE = (
+    "import json,sys\n"
+    "sys.path[:0]=json.loads(sys.argv[1])\n"
+    "import offscan\n"
+)
+
+
+def import_problem(ident: privdrop.Identity | None) -> str | None:
+    """Why ``ident`` cannot load the package, if that is why its processes fail.
+
+    Installed copies are readable by everyone; a source checkout in a private
+    home directory is not, and the scan account is never the desktop user.
+    """
+    if ident is None or os.geteuid() != 0:
+        return None
+    paths = _package_paths()
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    try:
+        proc = subprocess.run([sys.executable, "-I", "-c", _PROBE, json.dumps(paths)],
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=60, cwd="/", env=env,
+                              user=ident.uid, group=ident.gid, extra_groups=[])
+    except OSError as exc:
+        return f"the {ident.name} account cannot run {sys.executable}: {exc.strerror}"
+    except subprocess.SubprocessError:
+        return None
+    if proc.returncode == 0:
+        return None
+    return (f"the {ident.name} account cannot load {appinfo.NAME} from {paths[0]}. Use an installed "
+            f"copy, or let that account read the source checkout (and the directories above it)")
+
+
+def run(task: str, args: dict[str, Any] | None = None, fds: list[int] | None = None,
+        timeout: float = 180, limits: dict[str, int | None] | None = None) -> Any:
+    if task not in TASKS:
+        raise SandboxError(f"unknown sandbox task {task!r}")
+    fds = list(fds or [])
+    ident = privdrop.worker_identity()
+    limits = {**DEFAULT_LIMITS, **TASK_LIMITS.get(task, {}), **(limits or {})}
+    request = json.dumps({"task": task, "args": args or {}, "fds": fds, "limits": limits}).encode()
+    kwargs: dict[str, Any] = {}
+    if ident is not None:
+        kwargs.update(user=ident.uid, group=ident.gid, extra_groups=[])
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "HOME": ident.home if ident else "/",
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    try:
+        proc = _run_bounded([sys.executable, "-I", "-c", _BOOT, json.dumps(_package_paths())],
+                            request, timeout, fds, env, kwargs)
+    except subprocess.TimeoutExpired as exc:
+        raise SandboxError(f"sandbox task {task} timed out") from exc
+    if proc.returncode != 0:
+        if b"ModuleNotFoundError" in proc.stderr and (problem := import_problem(ident)):
+            raise SandboxError(problem)
+        tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-5:]
+        raise SandboxError(f"sandbox task {task} failed: {' | '.join(tail) or proc.returncode}")
+    try:
+        reply = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise SandboxError(f"sandbox task {task} returned invalid output") from exc
+    if not isinstance(reply, dict) or "ok" not in reply:
+        raise SandboxError(f"sandbox task {task} returned a malformed reply")
+    if not reply["ok"]:
+        raise SandboxError(str(reply.get("error", "unknown error")))
+    return reply.get("result")
+
+
+MAX_REPLY = 512 << 20          # the largest reply root reads from a sandbox child
+MAX_STDERR = 1 << 20
+
+
+def _run_bounded(argv: list[str], request: bytes, timeout: float, fds: list[int], env: dict[str, str],
+                 kwargs: dict[str, Any]) -> subprocess.CompletedProcess:
+    """Like subprocess.run(capture_output=True), but never reads more than MAX_REPLY."""
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            pass_fds=tuple(fds), env=env, cwd="/", **kwargs)
+    deadline = time.monotonic() + timeout
+    out, err = bytearray(), bytearray()
+    try:
+        with selectors.DefaultSelector() as sel:
+            assert proc.stdin and proc.stdout and proc.stderr
+            sel.register(proc.stdout, selectors.EVENT_READ, out)
+            sel.register(proc.stderr, selectors.EVENT_READ, err)
+            pending = memoryview(request)
+            os.set_blocking(proc.stdin.fileno(), False)
+            sel.register(proc.stdin, selectors.EVENT_WRITE, None)
+            while sel.get_map():
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                for key, _events in sel.select(min(left, 1.0)):
+                    if key.data is None:                       # stdin
+                        try:
+                            written = os.write(key.fd, pending[:65536])
+                        except BrokenPipeError:
+                            written = len(pending)
+                        pending = pending[written:]
+                        if not pending:
+                            sel.unregister(key.fileobj)
+                            key.fileobj.close()
+                        continue
+                    chunk = os.read(key.fd, 1 << 20)
+                    if not chunk:
+                        sel.unregister(key.fileobj)
+                        continue
+                    buf = key.data
+                    buf += chunk
+                    if buf is out and len(out) > MAX_REPLY:
+                        raise SandboxError("sandbox reply is too large")
+                    if buf is err and len(err) > MAX_STDERR:
+                        del err[:-MAX_STDERR]
+        proc.wait(max(0.1, deadline - time.monotonic()))
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream and not stream.closed:
+                stream.close()
+    return subprocess.CompletedProcess(argv, proc.returncode, bytes(out), bytes(err))
+
+
+def child_main() -> None:
+    privdrop.set_no_new_privs()
+    request = json.loads(sys.stdin.buffer.read())
+    limits = request.get("limits") or {}
+    privdrop.set_limits(**{k: v for k, v in limits.items() if k in DEFAULT_LIMITS})
+    task = request.get("task")
+    target = TASKS.get(task)
+    out = sys.stdout
+    if target is None or not target.startswith("offscan."):
+        out.write(json.dumps({"ok": False, "error": "task not allowed"}))
+        return
+    module_name, func_name = target.split(":")
+    try:
+        func = getattr(importlib.import_module(module_name), func_name)
+        result = func(request.get("args") or {}, [int(fd) for fd in request.get("fds") or []])
+        out.write(json.dumps({"ok": True, "result": result}))
+    except MemoryError:
+        out.write(json.dumps({"ok": False, "error": "out of memory (limit reached)"}))
+    except Exception as exc:
+        out.write(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+
+
+def task_echo(args: dict[str, Any], fds: list[int]) -> dict[str, Any]:
+    data = [os.pread(fd, 64, 0).decode("latin-1") for fd in fds]
+    return {"args": args, "data": data, "uid": os.getuid(),
+            "no_network": privdrop.has_network_namespace_isolation()}

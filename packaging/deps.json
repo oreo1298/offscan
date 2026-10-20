@@ -1,0 +1,37 @@
+{
+  "comment": "Runtime dependencies per package format. Each entry lists alternatives, best first. Used by build.py for the deb/rpm/PKGBUILD metadata and by install.sh to install what is missing.",
+  "deb": {
+    "depends": [["python3 (>= 3.11)"], ["python3-pyside6.qtwidgets", "python3-pyqt6"], ["qt6-qpa-plugins"],
+                ["python3-cryptography"], ["pkexec", "policykit-1"], ["util-linux"], ["mount"],
+                ["cryptsetup-bin"], ["dmsetup"], ["clamav"], ["clamav-freshclam"]],
+    "recommends": [["clamav-daemon"], ["python3-pyside6.qtdbus", "python3-pyqt6"], ["ntfs-3g"], ["lvm2"],
+                   ["sudo"]],
+    "suggests": [["dislocker"], ["chkrootkit"]]
+  },
+  "fedora": {
+    "depends": [["python3 >= 3.11"], ["python3-pyside6", "python3-pyqt6"], ["python3-cryptography"], ["polkit"],
+                ["util-linux"], ["cryptsetup"], ["device-mapper"], ["clamav"],
+                ["clamav-freshclam", "clamav-update"]],
+    "recommends": [["clamd"], ["ntfs-3g"], ["lvm2"], ["sudo"]],
+    "suggests": [["dislocker"], ["chkrootkit"]]
+  },
+  "opensuse": {
+    "depends": [["python3 >= 3.11"], ["python3-pyside6", "python313-pyside6", "python3-PyQt6", "python313-PyQt6"],
+                ["python3-cryptography", "python313-cryptography"], ["polkit"], ["pkexec"], ["util-linux"],
+                ["cryptsetup"], ["device-mapper"], ["clamav"]],
+    "recommends": [["ntfs-3g"], ["lvm2"], ["sudo"]],
+    "suggests": [["chkrootkit"]]
+  },
+  "arch": {
+    "depends": [["python"], ["pyside6", "python-pyqt6"], ["python-cryptography"], ["polkit"], ["util-linux"],
+                ["cryptsetup"], ["device-mapper"], ["clamav"]],
+    "optdepends": [
+      ["python-pyqt6", "alternative Qt binding"],
+      ["ntfs-3g", "NTFS on kernels without the ntfs3 driver"],
+      ["lvm2", "LVM volumes"],
+      ["dislocker", "BitLocker fallback (AUR)"],
+      ["chkrootkit", "optional rootkit checks (AUR)"],
+      ["sudo", "when no polkit agent is running"]
+    ]
+  }
+}

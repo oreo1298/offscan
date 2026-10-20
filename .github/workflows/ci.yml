@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.16.9
+      - run: ruff check src tests tools packaging
+      - run: shellcheck install.sh tests/packaging/*.sh
+
+  unit:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Qt runtime libraries; rpm (real sqlite/ndb rpmdb fixtures)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 rpm
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -m "not integration and not devmapper and not container"
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+  system-pyqt6:
+    # Ubuntu 24.04 / Mint 22 path: distro Python 3.12 + distro PyQt6 (Qt 6.4).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q python3-pyqt6 python3-pytest python3-pytestqt python3-yara \
+            python3-cryptography
+      - run: /usr/bin/python3 -m pytest tests/unit -m "not integration and not devmapper and not container"
+        env:
+          QT_QPA_PLATFORM: offscreen
+          OFFSCAN_QT_API: pyqt6
+
+  integration:
+    # Root, loop devices, device-mapper and real filesystems.  Proves that
+    # target images are byte-for-byte unchanged after list/probe/unlock/mount.
+    runs-on: ubuntu-24.04
+    env:
+      BITLK_COMMIT: 102e91cb0fee849bb86fb1ec4d6ea218e45563cd
+      BITLK_SHA256: 68bf5669f777668112d497234ebe2166b5feaf0e33b206b095b917f82937bd30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - name: Filesystem and crypto tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 chkrootkit rpm
+          sudo apt-get install -y -q ntfs-3g xfsprogs btrfs-progs cryptsetup-bin lvm2 \
+            dosfstools exfatprogs fdisk dislocker "linux-modules-extra-$(uname -r)" || \
+          sudo apt-get install -y -q ntfs-3g xfsprogs btrfs-progs cryptsetup-bin lvm2 dosfstools exfatprogs fdisk
+      - name: Kernel modules
+        run: |
+          sudo modprobe -a loop dm_mod dm_crypt xfs btrfs fuse || true
+          sudo modprobe ntfs3 || true
+          grep -E 'xfs|btrfs|ntfs|fuse' /proc/filesystems || true
+          ls -la /dev/fuse /dev/mapper/control || true
+          which ntfs-3g mkntfs dislocker || true
+      - name: BitLocker test images (from cryptsetup's test suite)
+        run: |
+          curl -fsSL -o bitlk.tar.xz \
+            "https://raw.githubusercontent.com/mbroz/cryptsetup/${BITLK_COMMIT}/tests/bitlk-images.tar.xz"
+          echo "${BITLK_SHA256}  bitlk.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bitlk" && tar -xJf bitlk.tar.xz -C "$RUNNER_TEMP/bitlk"
+      - run: pip install -e ".[dev]"
+      - name: Scan account, as the packages create it
+        # Scanners and parsers run as this account and import offscan from the
+        # checkout, so it must be able to reach it under the runner's home.
+        run: |
+          sudo useradd --system --no-create-home --home-dir / --shell /usr/sbin/nologin --user-group offscan
+          d="$GITHUB_WORKSPACE"
+          while [ "$d" != / ]; do sudo chmod o+x "$d"; d=$(dirname "$d"); done
+      - name: Integration tests (as root)
+        run: |
+          sudo -E env "PATH=$PATH" "OFFSCAN_TEST_BITLK_DIR=$RUNNER_TEMP/bitlk/bitlk-images" \
+            "$(which python)" -m pytest -m integration -v -p no:cacheprovider

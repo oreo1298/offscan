@@ -1,0 +1,51 @@
+{
+  "comment": "Python packages that distributions do not ship (or ship too old). Installed into VENDOR_DIR. Every file is verified by SHA-256 before use.",
+  "packages": [
+    {
+      "name": "yara-x", "version": "1.22.0", "license": "BSD-3-Clause",
+      "homepage": "https://virustotal.github.io/yara-x/",
+      "license_files": ["licenses/yara-x/LICENSE"],
+      "note": "The wheel carries no licence file, so the text from the v1.22.0 tag is shipped instead. Its extension module includes Rust crates under permissive licences (MIT, Apache-2.0, BSD, Zlib, Unicode-3.0 and similar); the wheel's CycloneDX SBOM lists each one.",
+      "files": {
+        "x86_64": {"file": "yara_x-1.22.0-cp39-abi3-manylinux_2_28_x86_64.whl",
+                   "sha256": "a9a9a4b213b980d6b05231ea5b835c03d40e304d99ed05d18ac5e7a801de3c81",
+                   "url": "https://files.pythonhosted.org/packages/3b/ee/f8beabcc6ca804749c5dd91b943a81d75314ebb12ef471ad3eff7631c5f6/yara_x-1.22.0-cp39-abi3-manylinux_2_28_x86_64.whl"},
+        "aarch64": {"file": "yara_x-1.22.0-cp39-abi3-manylinux_2_28_aarch64.whl",
+                    "sha256": "066e86533b7143ee96bb80e36b683eb25dad8bc4c064603802d3a8cbbd97f03e",
+                    "url": "https://files.pythonhosted.org/packages/bb/71/bfc58b9d8afbc2e25a1fd0ce72a69c48fc9cb554238cde33c89787d84ff2/yara_x-1.22.0-cp39-abi3-manylinux_2_28_aarch64.whl"}
+      }
+    },
+    {
+      "name": "regipy", "version": "6.5.0", "license": "MIT", "homepage": "https://github.com/mkorman90/regipy",
+      "files": {
+        "any": {"file": "regipy-6.5.0-py3-none-any.whl",
+                "sha256": "7b8a11ceb049d95a7e1e40193e5f7f5e29c737fb6de03fc188eaa981de95b959",
+                "url": "https://files.pythonhosted.org/packages/aa/be/9863f8ffa987c4c8eb197ca77e7747926eb3ef761ff4f22d812311f7fbc6/regipy-6.5.0-py3-none-any.whl"}
+      }
+    },
+    {
+      "name": "construct", "version": "2.10.70", "license": "MIT", "homepage": "https://github.com/construct/construct",
+      "files": {
+        "any": {"file": "construct-2.10.70-py3-none-any.whl",
+                "sha256": "c80be81ef595a1a821ec69dc16099550ed22197615f4320b57cc9ce2a672cb30",
+                "url": "https://files.pythonhosted.org/packages/b2/fb/08b3f4bf05da99aba8ffea52a558758def16e8516bc75ca94ff73587e7d3/construct-2.10.70-py3-none-any.whl"}
+      }
+    },
+    {
+      "name": "inflection", "version": "0.5.1", "license": "MIT", "homepage": "https://github.com/jpvanhal/inflection",
+      "files": {
+        "any": {"file": "inflection-0.5.1-py2.py3-none-any.whl",
+                "sha256": "f38b2b640938a4f35ade69ac3d053042959b62a0f1076a5bbaa1b9526605a8a2",
+                "url": "https://files.pythonhosted.org/packages/59/91/aa6bde563e0085a02a435aa99b49ef75b0a4b062635e606dab23ce18d720/inflection-0.5.1-py2.py3-none-any.whl"}
+      }
+    },
+    {
+      "name": "pytz", "version": "2026.5", "license": "MIT", "homepage": "https://pythonhosted.org/pytz/",
+      "files": {
+        "any": {"file": "pytz-2026.5-py2.py3-none-any.whl",
+                "sha256": "e658af3757f9e26a9d25dd2aff38335acd92bc9104f890a894b2c1ba28311b03",
+                "url": "https://files.pythonhosted.org/packages/4f/ef/c66110d46fb800dda0bf33164182dfadabe26a90e4476844d502a23dca8e/pytz-2026.5-py2.py3-none-any.whl"}
+      }
+    }
+  ]
+}

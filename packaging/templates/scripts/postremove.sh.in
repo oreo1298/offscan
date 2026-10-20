@@ -1,0 +1,13 @@
+#!/bin/sh
+# Generated from packaging/templates/scripts/postremove.sh.in; do not edit.
+# Quarantined files and the change log are never deleted by the package
+# manager: they are the only way to restore a file to the drive it came from.
+case "$1" in
+    purge|0|"")
+        if [ -d "@SYSTEM_STATE_DIR@" ]; then
+            echo "Kept @SYSTEM_STATE_DIR@ (quarantined files and the change log of drive changes)." >&2
+            echo "Delete it by hand when you no longer need them." >&2
+        fi
+        ;;
+esac
+exit 0

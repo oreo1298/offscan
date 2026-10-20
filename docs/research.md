@@ -270,6 +270,25 @@ validation, uneven packaging (no Fedora/openSUSE). So **re-implement its semanti
   * web shells
 * journald offline: `journalctl -D <mnt>/var/log/journal -o json` (host must be ≥ target).
 
+### Verified while building M4 (2026-10-20)
+
+* **rpm ndb `Packages.db`:** header `RpmP`; 16-byte slots `Slot`, pkgidx, blkoff, blkcnt at offset 32; blob at `blkoff*16` = `BlbS`, pkgidx, generation, length + header blob, with the `BlbE` trailer in the last 4 bytes of the block range. All little-endian. [V: databases created with rpm 4.18.2 `--define '_db_backend ndb'`]
+* **rpm sqlite:** `Packages(hnum, blob)`, with the blob = header without lead (`il`, `dl` big-endian, index, data). [V: same]
+* **Authenticode hash:** hashing the file minus CheckSum, the Certificate Table directory entry and the certificate data equals osslsigncode 2.8's "Calculated message digest" for PE32 and PE32+, signed and unsigned. [V]
+* **Hayabusa (main, 2026-10):** `dfir-timeline -d DIR -t jsonl -o FILE -w -q -Q -K -C -m LEVEL -r RULES`; `-t` csv|json|jsonl; 3.x used `json-timeline -L`. JSONL fields: Timestamp, RuleTitle, Level (crit/high/med/low/info), Computer, Channel, EventID, RecordID, Details, RuleID. [V: `src/detections/configs.rs`, `config/default_profile.yaml`]
+* **Chainsaw:** `chainsaw hunt RULES PATH --json -q --skip-errors [-s SIGMA --mapping mappings/sigma-event-logs-all.yml]`. [V: README]
+* **chkrootkit 0.58b:** refuses to run unless `id` says uid 0. `-p DIR:…` picks the external tools it uses. So a shim `id` plus `setpriv --reuid=… --inh-caps=-all,+dac_read_search --ambient-caps=… --bounding-set=… --no-new-privs` runs it as an unprivileged reader. File tests under `-r` work; `ifconfig` and other host tests are left out. [V]
+
+### Verified while building M6 (2026-10-20)
+
+* **nfpm 2.48.0** (SHA-256 `6d7f9a28…1750` of the Linux x86_64 tarball, from the release's `checksums.txt`): a JSON config is accepted, since it is valid YAML. `version_schema: none` keeps `0.1.0~dev0` verbatim. rpm rich dependencies such as `(python3-pyside6 or python3-pyqt6)` pass through unchanged, and rpm 4.18 parses them as rich dependencies (`rpm -i --test` lists them). [V]
+* **makepkg 6.0.2:** `makepkg --printsrcinfo` on the generated PKGBUILD is byte-identical to the `.SRCINFO` that `build.py` writes. The package builds with `!strip !debug`, and its byte-code records `/usr/lib/offscan/...` as the source path. [V]
+* **yara-x 1.22.0 wheel:** it has no licence file, only a CycloneDX SBOM (309 Rust crates, all permissive: MIT, Apache-2.0, BSD, Zlib, Unicode-3.0 and similar). So the BSD-3-Clause text from the v1.22.0 tag is shipped in `packaging/licenses/yara-x/LICENSE`. [V]
+* **Container images** strip documentation: Ubuntu has `/etc/dpkg/dpkg.cfg.d/excludes`, Fedora `tsflags=nodocs`, openSUSE `rpm.install.excludedocs`, Arch `NoExtract`. The install tests turn these off, so man pages and docs are checked too. [V: Ubuntu]
+* **Ubuntu 24.04 and 26.04 containers** (package and install.sh): install, `selftest --engines` (EICAR via hashes, YARA-X and ClamAV), the GUI self-check, the helper handshake, upgrade, removal. Each also checks that the package and install.sh refuse to install over each other. 24.04 runs Python 3.12 with PyQt6 6.6.1/Qt 6.4.2; 26.04 runs Python 3.14 with PySide6 6.10.2. [V]
+* This sandbox's network policy blocks the Debian, Fedora, openSUSE and Arch mirrors. Those containers run in GitHub Actions only. [V]
+* **git and sudo:** git refuses to work in a checkout owned by another user (`safe.directory`). That protects root from a checkout's configuration, for example `core.fsmonitor` running a command. So `build.py` only asks git in a checkout owned by the current user; otherwise it walks the tree. [V]
+
 ## 9. Licence compatibility (offscan = GPL-3.0-or-later)
 
 | Component | Licence | How used | OK? |
