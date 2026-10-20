@@ -30,15 +30,20 @@ def from_wire(path: str) -> bytes:
     return os.fsencode(path)
 
 
-def display(path: bytes | str, max_len: int | None = None) -> str:
-    """Return a safe, single-line, human-readable rendering of ``path``."""
+def display(path: bytes | str, max_len: int | None = None, backslash: bool = True) -> str:
+    """Return a safe, single-line, human-readable rendering of ``path``.
+
+    ``backslash=False`` leaves backslashes alone (readable Windows paths in the GUI);
+    control and disguising characters are escaped either way, but the result is then
+    no longer an unambiguous encoding of the input.
+    """
     text = os.fsdecode(path) if isinstance(path, bytes) else path
     out: list[str] = []
     for ch in text:
         code = ord(ch)
         if 0xDC80 <= code <= 0xDCFF:          # undecodable byte (surrogateescape)
             out.append(f"\\x{code - 0xDC00:02x}")
-        elif ch == "\\":
+        elif ch == "\\" and backslash:
             out.append("\\\\")
         elif ch == "\n":
             out.append("\\n")

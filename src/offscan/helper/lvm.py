@@ -126,21 +126,27 @@ def logical_volumes(devices: list[str]) -> list[LogicalVolume]:
 
 
 def activate_readonly(lv: LogicalVolume) -> str:
+    return activate(lv, readonly=True)
+
+
+def activate(lv: LogicalVolume, readonly: bool = True, suffix: str = "") -> str:
+    """Create the LV's mapping ourselves; writable only for a confirmed quarantine/delete/restore."""
     if not lv.supported:
         raise LvmError(f"{lv.vg}/{lv.name}: {lv.reason}")
     dmsetup = tools.require("dmsetup")
     table = "\n".join(lv.table) + "\n"
-    tools.run([dmsetup, "create", lv.dm_name, "--readonly", "--uuid",
-               f"{appinfo.NAME.upper()}-LVM-{lv.uuid}"[:128]],
+    name = lv.dm_name + suffix
+    tools.run([dmsetup, "create", name, *(["--readonly"] if readonly else []), "--uuid",
+               f"{appinfo.NAME.upper()}-LVM-{lv.uuid}{suffix}"[:128]],
               input=table.encode(), timeout=60)
-    path = f"/dev/mapper/{lv.dm_name}"
+    path = f"/dev/mapper/{name}"
     deadline = time.monotonic() + 15
     while not os.path.exists(path) and time.monotonic() < deadline:
         time.sleep(0.1)
     if not os.path.exists(path):
         raise LvmError(f"{path} did not appear")
-    if not blockdev.get_ro(path):
-        deactivate(lv.dm_name)
+    if readonly and not blockdev.get_ro(path):
+        deactivate(name)
         raise LvmError("mapping is not read-only; removed it again")
     return path
 

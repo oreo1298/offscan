@@ -198,3 +198,37 @@ def test_bitlocker_unlock(bitlk, kind: str, no_leaks, helper) -> None:
         assert child["fstype"] == "ntfs"
         helper.call("volume.lock", {"volume": vol["id"]}, timeout=120)
     assert images.sha256(img) == before
+
+
+def test_luks_quarantine_needs_the_passphrase(luks_image: Path, no_leaks, helper, tmp_path: Path) -> None:
+    """Changes inside LUKS reopen it writable with the passphrase, then read-only again."""
+    import hashlib
+    import shutil
+
+    from offscan.protocol import RemoteError
+    copy = tmp_path / "luks-copy.img"
+    shutil.copyfile(luks_image, copy)
+    sha = hashlib.sha256(images.eicar()).hexdigest()
+    with images.attached(copy) as dev:
+        vol = _vol(helper, dev)
+        unlocked = helper.call("volume.unlock", {"volume": vol["id"], "secret": PASSPHRASE}, timeout=120)
+        child = unlocked["unlocked"]
+        helper.call("volume.mount", {"volume": child}, timeout=120)
+        plan = helper.call("remedy.plan", {"volume": child, "path": "/home/user/eicar.com"}, timeout=120)
+        assert plan["possible"] and plan["needs_secret"] == [{"volume": vol["id"], "kind": "luks"}]
+        request = {"volume": child, "path": "/home/user/eicar.com", "expect_sha256": sha,
+                   "action": "quarantine", "confirm": True}
+        with pytest.raises(RemoteError) as err:
+            helper.call("remedy.apply", request, timeout=300)
+        assert err.value.details["needs_secret"] == [{"volume": vol["id"], "kind": "luks"}]
+        record = helper.call("remedy.apply", {**request, "secrets": {vol["id"]: {"secret": PASSPHRASE}}},
+                             timeout=300)
+        assert record["result"] == "ok" and not record["restore_errors"], record
+        new_child = record["renamed"].get(child, child)
+        listed = _vol(helper, dev)
+        assert listed["encryption"]["unlocked"] and listed["children"][0]["id"] == new_child
+        mountpoint = listed["children"][0]["mountpoint"]
+        assert mountpoint and blockdev.get_ro(listed["children"][0]["device"])
+        with RootFS(mountpoint) as fs:
+            assert not fs.exists("/home/user/eicar.com")
+        helper.call("volume.lock", {"volume": vol["id"]}, timeout=120)

@@ -469,6 +469,9 @@ class VolumeManager:
         elif layer.kind == "loop":
             if layer.target and blockdev.loop_backing(layer.target) is not None:
                 blockdev.detach_loop(layer.target)
+        elif layer.kind == "unsetro":                 # a writable session lifted a shared flag
+            if os.path.exists(layer.target):
+                blockdev.set_ro(layer.target, True)
         elif layer.kind == "setro":
             still_needed = any(o is not layer and o.kind == "setro" and o.target == layer.target
                                for o in self.state.layers)

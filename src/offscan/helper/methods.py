@@ -211,6 +211,8 @@ def register(server: Server, manager: VolumeManager, isolated: bool) -> None:
     server.register("scan.start", Schema({"options": Param(dict)}), scan_start)
     server.register("scan.pause", Schema({"job": Param(int)}), scan_pause)
     server.register("scan.resume", Schema({"job": Param(int)}), scan_resume)
+    from . import remedy
+    remedy.register(server, manager, jobs)
 
 
 def _flatten(volumes: list[dict[str, Any]]) -> list[dict[str, Any]]:

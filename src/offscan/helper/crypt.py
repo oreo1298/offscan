@@ -42,11 +42,14 @@ def _cryptsetup() -> str:
     return tools.require("cryptsetup")
 
 
-def cryptsetup_open(source: str, name: str, kind: str, secret: bytes) -> str:
-    """Open ``source`` (already a read-only loop) as /dev/mapper/<name>."""
+def cryptsetup_open(source: str, name: str, kind: str, secret: bytes, readonly: bool = True) -> str:
+    """Open ``source`` (normally a read-only loop) as /dev/mapper/<name>.
+
+    ``readonly=False`` is used only for a confirmed quarantine/delete/restore.
+    """
     ctype = {"luks": "luks", "bitlocker": "bitlk"}[kind]
-    args = [_cryptsetup(), "open", "--type", ctype, "--readonly", "--disable-locks",
-            "--key-file", "-", source, name]
+    args = [_cryptsetup(), "open", "--type", ctype, *(["--readonly"] if readonly else []),
+            "--disable-locks", "--key-file", "-", source, name]
     proc = tools.run(args, input=secret, timeout=180, check=False)
     if proc.returncode != 0:
         msg = (proc.stderr or proc.stdout).strip()
@@ -55,7 +58,7 @@ def cryptsetup_open(source: str, name: str, kind: str, secret: bytes) -> str:
         raise UnlockError(msg or f"cryptsetup failed ({proc.returncode})")
     path = f"/dev/mapper/{name}"
     _wait_for(path)
-    if not blockdev.get_ro(path):
+    if readonly and not blockdev.get_ro(path):
         cryptsetup_close(name)
         raise UnlockError("the unlocked mapping is not read-only; closed it again")
     return path

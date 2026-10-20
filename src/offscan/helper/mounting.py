@@ -147,6 +147,52 @@ def verify_readonly(target: str) -> mountinfo.MountEntry:
     return entry
 
 
+WRITABLE_FSTYPES = ("ext2", "ext3", "ext4", "xfs", "btrfs", "vfat", "exfat", "f2fs", *NTFS_TYPES)
+WRITE_OPTIONS = ("rw", "nosuid", "nodev", "noexec")
+WRITE_EXTRA = {"btrfs": ["subvolid=5"], "xfs": ["nouuid"]}
+
+
+def mount_writable(source: str, target: str, fstype: str) -> MountResult:
+    """Read-write mount for one confirmed quarantine/delete/restore.
+
+    Still nosuid,nodev,noexec(,nosymfollow).  Journals are replayed as on a
+    normal boot (the caller has told the user).  Never removes a Windows
+    hibernation file: ntfs-3g refuses such volumes and so do we, earlier.
+    """
+    if fstype not in WRITABLE_FSTYPES:
+        raise MountError(f"changing files on {fstype or 'this'} filesystem is not supported")
+    os.makedirs(target, mode=0o700, exist_ok=True)
+    flags = [*WRITE_OPTIONS, *(["nosymfollow"] if supports_nosymfollow() else [])]
+    attempts: list[str] = []
+    candidates = ntfs_drivers() if fstype in NTFS_TYPES else [fstype]
+    for driver in candidates:
+        if driver == "ntfs-3g":
+            ntfs3g = tools.require("ntfs-3g")
+            opts = "rw,nosuid,nodev,noexec,norecover,streams_interface=none"
+            proc = tools.run([ntfs3g, "-o", opts, source, target], timeout=120, check=False)
+        else:
+            opts = ",".join(flags + WRITE_EXTRA.get(driver, []))
+            proc = _mount_kernel(source, target, driver, opts)
+        if proc.returncode == 0:
+            if driver == "ntfs-3g":
+                _harden_bind_rw(target)
+            real = os.path.realpath(target)
+            entry = next((e for e in mountinfo.read("self") if e.mountpoint == real), None)
+            if entry is None or entry.readonly:
+                umount(target)
+                raise MountError("the filesystem refused to mount writable (it may need checking first)")
+            return MountResult(target, "ntfs" if fstype in NTFS_TYPES else fstype, driver, opts.split(","),
+                               driver == "ntfs-3g", [ln for ln in proc.stderr.splitlines() if ln.strip()])
+        attempts.append(f"{driver}: {(proc.stderr or proc.stdout).strip()}")
+    raise MountError("could not mount the volume writable", attempts)
+
+
+def _harden_bind_rw(target: str) -> None:
+    mount = tools.require("mount")
+    flags = ["nosuid", "nodev", "noexec"] + (["nosymfollow"] if supports_nosymfollow() else [])
+    tools.run([mount, "-o", "remount,bind," + ",".join(flags), target], timeout=60, check=False)
+
+
 def mount(source: str, target: str, fstype: str) -> MountResult:
     os.makedirs(target, mode=0o755, exist_ok=True)
     attempts: list[str] = []

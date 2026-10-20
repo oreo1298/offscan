@@ -20,7 +20,7 @@ from .. import paths
 
 @dataclass
 class Layer:
-    kind: str                 # setro | loop | crypt | dislocker | lvm | mount
+    kind: str                 # setro | unsetro | loop | crypt | dislocker | lvm | mount
     target: str               # device path, dm name, or mount point
     owner: str                # volume (kernel name) the layer was created for
     extra: dict[str, Any] = field(default_factory=dict)

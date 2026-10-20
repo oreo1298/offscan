@@ -31,7 +31,7 @@ The research behind these decisions is in `docs/research.md`.
 * **M2 Scan engine:** walker, workers, hash/YARA/clamd engines, scan modes, limits, reports, CLI.
 * **M3 Definitions:** sources, verification, atomic sets with rollback, bundles, CLI.
 * **M4 Persistence and integrity:** Windows and Linux checks; package verification; optional tools (see `docs/checks.md`).
-* **M5 GUI:** all pages, theming, accessibility, quarantine/delete.
+* **M5 GUI:** all pages, theming, accessibility, quarantine/delete (see `docs/remediation.md`).
 * **M6 Packaging:** nfpm, PKGBUILD, `install.sh`, README, container tests.
 * **M7 Hardening:** security review, fuzzing, release.
 

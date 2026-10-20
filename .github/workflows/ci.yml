@@ -44,7 +44,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update -q && sudo apt-get install -y -q python3-pyqt6 python3-pytest python3-yara python3-cryptography
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q python3-pyqt6 python3-pytest python3-pytestqt python3-yara \
+            python3-cryptography
       - run: /usr/bin/python3 -m pytest tests/unit -m "not integration and not devmapper and not container"
         env:
           QT_QPA_PLATFORM: offscreen

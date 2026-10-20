@@ -50,7 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog=appinfo.NAME,
         description=f"{appinfo.DISPLAY_NAME}: {appinfo.SUMMARY}. "
                     "Target drives are always mounted read-only.",
-        epilog="exit codes: 0 clean/success, 1 detections found, 2 error, 3 incomplete scan")
+        epilog="exit codes: 0 clean/success, 1 detections found, 2 error, 3 incomplete scan, "
+               "4 change refused")
     parser.add_argument("--version", action="version", version=f"%(prog)s {appinfo.VERSION}")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose logging")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -72,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _command_modules() -> list[Callable[[argparse._SubParsersAction], None]]:
     """Sub-command groups contributed by other modules (added per milestone)."""
     registrars: list[Callable[[argparse._SubParsersAction], None]] = []
-    for name in ("drives", "scan", "defs", "history"):
+    for name in ("drives", "scan", "defs", "history", "remedy"):
         try:
             module = __import__(f"{__package__}.{name}", fromlist=["register"])
         except ImportError:
