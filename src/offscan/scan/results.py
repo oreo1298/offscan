@@ -7,6 +7,7 @@ from typing import Any
 
 SEVERITIES = ("high", "medium", "low", "info")
 SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITIES)}
+CHECK_ENGINES = ("persistence", "integrity", "tool")      # findings that are not file detections
 
 
 @dataclass
@@ -32,7 +33,19 @@ class Detection:
 
     @property
     def key(self) -> tuple[str, str, str, str]:
-        return (self.volume, self.path, self.engine, self.signature)
+        location = self.details.get("location") if self.engine in CHECK_ENGINES else None
+        signature = f"{self.signature}\0{location}" if location else self.signature
+        return (self.volume, self.path, self.engine, signature)
+
+    @property
+    def identity(self) -> str | None:
+        """What a false-positive mark refers to: the file hash, or the entry's fingerprint."""
+        return self.sha256 or self.details.get("fingerprint")
+
+    @property
+    def inventory(self) -> bool:
+        """An informational autostart/integrity entry, not something to act on."""
+        return self.engine in CHECK_ENGINES and self.severity == "info"
 
 
 def clamav_severity(name: str) -> tuple[str, str]:
@@ -84,7 +97,9 @@ class ScanSummary:
     files_skipped: int = 0
     errors: int = 0
     detections: int = 0
+    inventory: int = 0                 # informational persistence/integrity entries
     engines: dict[str, Any] = field(default_factory=dict)
+    checks: dict[str, Any] = field(default_factory=dict)      # per-volume persistence/integrity results
     error_samples: list[dict[str, str]] = field(default_factory=list)
     volumes: list[dict[str, Any]] = field(default_factory=list)
     message: str = ""

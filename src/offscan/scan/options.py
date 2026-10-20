@@ -8,6 +8,7 @@ from typing import Any
 
 MODES = ("quick", "full", "custom")
 ENGINES = ("clamav", "yara", "hashes")
+TOOLS = ("chkrootkit", "hayabusa", "chainsaw")          # optional external checkers, never bundled
 MiB = 1024 * 1024
 
 
@@ -45,7 +46,9 @@ class ScanOptions:
     workers: int = 0                                         # 0 = automatic
     detect_pua: bool = False
     runtime_dir: str = ""                                    # prepared by the client
-    persistence: bool = True                                 # include persistence checks (M4)
+    persistence: bool = True                                 # autostart/persistence checks
+    integrity: bool = True                                   # package verification, unowned files
+    tools: list[str] = field(default_factory=list)          # optional external tools (opt-in)
 
     def validate(self) -> None:
         if not self.volumes:
@@ -62,6 +65,9 @@ class ScanOptions:
         for path in self.paths:
             if "\0" in path or len(path) > 4096:
                 raise ValueError("invalid path")
+        unknown_tools = set(self.tools) - set(TOOLS)
+        if unknown_tools:
+            raise ValueError(f"unknown tools: {sorted(unknown_tools)}")
         if not (0 <= self.workers <= 64):
             raise ValueError("workers must be between 0 and 64")
         self.limits.validate()
@@ -88,6 +94,8 @@ class ScanOptions:
             detect_pua=bool(data.get("detect_pua", False)),
             runtime_dir=str(data.get("runtime_dir", "")),
             persistence=bool(data.get("persistence", True)),
+            integrity=bool(data.get("integrity", True)),
+            tools=[str(t) for t in data.get("tools") or []],
         )
         opts.validate()
         return opts

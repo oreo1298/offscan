@@ -70,7 +70,8 @@ def test_scan_dirty_disk_all_engines(target_disk, helper, test_defs, tmp_path) -
     assert not os.path.exists(session.options.runtime_dir), "runtime dir not cleaned up"
     # History and reports.
     (record,) = history.scans()
-    assert record["summary"]["detections"] == len(session.detections)
+    counted = record["summary"]["detections"] + record["summary"]["inventory"]
+    assert counted == len(session.detections)
     report = reports.build(summary, session.options.to_dict(), session.targets,
                            [d.to_dict() for d in session.detections], session.definitions)
     for kind in ("html", "json", "csv"):
@@ -81,6 +82,45 @@ def test_scan_dirty_disk_all_engines(target_disk, helper, test_defs, tmp_path) -
     quick = ScanSession(helper, ScanOptions(volumes=targets, mode="quick"), test_defs)
     quick.run()
     assert _engines_found(quick.detections, "/home/user/eicar.com") == expected
+
+
+def test_persistence_and_integrity(target_disk, helper, test_defs, tmp_path) -> None:
+    """Autostart entries and package checks on the fixture disk, in quick mode."""
+    dev, _ = target_disk
+    disk = find_disk(helper.call("drives.list", {"probe": "none"})["disks"], dev)
+    vols = {v["device"]: v["id"] for v in disk["volumes"]}
+    linux, windows = vols[f"{dev}p1"], vols[f"{dev}p2"]
+    session = ScanSession(helper, ScanOptions(volumes=[linux, windows], mode="quick", workers=2), test_defs)
+    summary = session.run()
+    assert summary["state"] == "finished", summary
+    found = {(d.volume, d.details.get("check"), d.severity) for d in session.detections
+             if d.engine in ("persistence", "integrity")}
+    # The cron entry is "low": the program it starts lives in a hidden folder.
+    for check, severity in (("linux.cron", "low"), ("linux.systemd", "high"), ("linux.ld_preload", "high"),
+                            ("linux.ssh_key", "info"), ("integrity.package_modified", "high"),
+                            ("integrity.setid", "high")):
+        assert (linux, check, severity) in found, (check, sorted(found))
+    assert (windows, "windows.run_key", "high") in found                 # Alice's encoded PowerShell
+    # Programs started by autostart entries are scanned even in folders quick scans skip.
+    forced = {(d.volume, d.path) for d in session.detections if d.engine == "hash"}
+    assert (linux, "/usr/share/doc/.cache/helper") in forced
+    assert (windows, "/Windows/Fonts/fontcache.dat") in forced
+    modified = next(d for d in session.detections if d.details.get("check") == "integrity.package_modified")
+    assert modified.path == "/usr/bin/ls" and modified.details["package"] == "coreutils"
+    checks = summary["checks"]
+    assert checks[linux]["integrity"]["manager"] == "dpkg"
+    assert checks[windows]["kind"] == "windows" and checks[windows]["persistence"]["findings"] >= 2
+    assert summary["inventory"] >= 2 and summary["detections"] >= 8
+    report = reports.build(summary, session.options.to_dict(), session.targets,
+                           [d.to_dict() for d in session.detections], session.definitions)
+    page = reports.to_html(report)
+    assert "Persistence and integrity" in page and "/etc/ld.so.preload" in page
+    # Opting out skips the checks.
+    opts = ScanOptions(volumes=[linux], mode="quick", persistence=False, integrity=False)
+    plain = ScanSession(helper, opts, test_defs)
+    plain_summary = plain.run()
+    assert not [d for d in plain.detections if d.engine in ("persistence", "integrity")]
+    assert not plain_summary["checks"]
 
 
 def _zip_bytes(members: dict[str, bytes], compress: int = zipfile.ZIP_DEFLATED) -> bytes:

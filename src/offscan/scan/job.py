@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import log, names, privdrop
+from ..persistence.runner import ChecksRunner
 from ..safefs import RootFS
 from . import clamd, walker
 from .options import ScanOptions
@@ -74,11 +75,27 @@ class ScanJob:
         self._current = ""
         self._rates: list[tuple[float, int, int]] = []
         self.seen_detections: set[tuple[str, str, str, str]] = set()
+        self._det_lock = threading.Lock()
+        self.checks: ChecksRunner | None = None
+        self.forced: set[tuple[str, bytes]] = set()          # (volume, path) scanned first, never skipped
+        self.setid: dict[str, list[dict[str, Any]]] = {}
 
     # ------------------------------------------------------------- helpers
 
-    def status(self, phase: str, message: str) -> None:
-        self.emit("scan.status", {"phase": phase, "message": message})
+    def status(self, phase: str, message: str, extra: dict[str, Any] | None = None) -> None:
+        self.emit("scan.status", {"phase": phase, "message": message, **(extra or {})})
+
+    def emit_detection(self, det: Detection) -> None:
+        """Count and stream a detection once (called from the dispatcher and the checks thread)."""
+        with self._det_lock:
+            if det.key in self.seen_detections:
+                return
+            self.seen_detections.add(det.key)
+            if det.inventory:
+                self.summary.inventory += 1
+            else:
+                self.summary.detections += 1
+        self.emit("scan.detection", det.to_dict())
 
     def _starts(self) -> list[bytes]:
         if self.options.mode == "custom":
@@ -104,21 +121,59 @@ class ScanJob:
 
     # ------------------------------------------------------------- walker
 
+    def _put(self, out: queue.Queue, entry: tuple[str, walker.FileItem]) -> bool:
+        while not self.cancelled.is_set():
+            try:
+                out.put(entry, timeout=0.5)
+                return True
+            except queue.Full:
+                continue
+        os.close(entry[1].fd)
+        return False
+
+    def _open_target(self, root: RootFS, path: bytes, windows: bool) -> walker.FileItem | None:
+        """Open a program that a persistence entry starts (case-insensitively on Windows)."""
+        candidates = [path]
+        if windows:
+            found = root.find_ci(path)
+            if found is not None and found != path:
+                candidates.append(found)
+        for candidate in candidates:
+            try:
+                real = root.realpath(candidate)
+                fd = root.open_regular(real, follow_last=False)
+            except OSError:
+                continue
+            st = os.fstat(fd)
+            return walker.FileItem(real, fd, st.st_size, st.st_mtime, st.st_uid)
+        return None
+
     def _produce(self, out: queue.Queue, stats: walker.WalkStats) -> None:
         try:
             for volume, mountpoint in self.mounts.items():
                 with RootFS(mountpoint) as root:
+                    targets = self.checks.targets.get(volume, set()) if self.checks else set()
+                    windows = bool(self.checks and volume in self.checks.windows_volumes)
+                    first: set[bytes] = set()
+                    for path in sorted(targets):
+                        item = self._open_target(root, path, windows)
+                        if item is None or item.relpath in first:
+                            if item is not None:
+                                os.close(item.fd)
+                            continue
+                        first.add(item.relpath)
+                        self.forced.add((volume, item.relpath))
+                        if not self._put(out, (volume, item)):
+                            return
+                    before = len(stats.setid)
                     for start in self._starts():
                         for item in walker.walk(root, start, self.options.mode, self.cancelled, stats):
-                            while not self.cancelled.is_set():
-                                try:
-                                    out.put((volume, item), timeout=0.5)
-                                    break
-                                except queue.Full:
-                                    continue
-                            else:
+                            if item.relpath in first:
                                 os.close(item.fd)
+                                continue
+                            if not self._put(out, (volume, item)):
                                 return
+                    self.setid.setdefault(volume, []).extend(stats.setid[before:])
         except Exception as exc:
             logger.error("walker failed: %s", exc)
             stats.error(b"/", f"walker failed: {exc}")
@@ -133,7 +188,9 @@ class ScanJob:
         clamd_proc = None
         pool = None
         stats = walker.WalkStats()
+        checks_thread = None
         try:
+            checks_thread = self._start_checks()
             want_clamav = "clamav" in opts.engines and (runtime / "clamav").is_dir() \
                 and clamd.clamd_binary() is not None
             if "clamav" in opts.engines and not want_clamav:
@@ -166,6 +223,9 @@ class ScanJob:
             status = pool.wait_ready(timeout=1200, on_wait=waiting)
             self.summary.engines.update({k: v for k, v in status.items()})
             self.emit("scan.engines", self.summary.engines)
+            while checks_thread is not None and checks_thread.is_alive():
+                checks_thread.join(0.5)         # autostart targets must be known before the walk
+                waiting()
             self.status("scanning", "Scanning…")
             items: queue.Queue = queue.Queue(maxsize=QUEUE_SIZE)
             producer = threading.Thread(target=self._produce, args=(items, stats), name="walk",
@@ -173,6 +233,12 @@ class ScanJob:
             producer.start()
             self._dispatch(pool, items, stats)
             producer.join(timeout=30)
+            pool.shutdown()                     # free clamd's memory before the integrity phase
+            pool = None
+            if clamd_proc is not None:
+                clamd.stop(clamd_proc)
+                clamd_proc = None
+            self._after_scan()
             self.summary.state = "cancelled" if self.cancelled.is_set() else "finished"
         except ScanError as exc:
             self.summary.state = "cancelled" if exc.code == "cancelled" else "failed"
@@ -186,12 +252,48 @@ class ScanJob:
                 pool.shutdown()
             if clamd_proc is not None:
                 clamd.stop(clamd_proc)
+        if self.checks is not None:
+            self.summary.checks.update(self.checks.summary)
         self.summary.errors += stats.error_count
         for path, message in stats.errors[:50]:
             self._sample_error(path, message)
         self.summary.finished = time.time()
         self._progress(force=True)
         return self.summary
+
+    def _start_checks(self) -> threading.Thread | None:
+        """Persistence checks run while ClamAV loads its signatures."""
+        opts = self.options
+        if opts.mode == "custom" or not (opts.persistence or opts.integrity or opts.tools):
+            return None
+        self.checks = ChecksRunner(self.mounts, opts.mode, list(opts.tools), self.identity,
+                                   self.emit_detection, self.status, self.cancelled)
+
+        def run() -> None:
+            assert self.checks is not None
+            try:
+                self.checks.discover()
+                if opts.persistence:
+                    self.checks.persistence()
+            except Exception as exc:
+                logger.exception("persistence checks failed")
+                self.summary.checks["error"] = f"{type(exc).__name__}: {exc}"[:500]
+        thread = threading.Thread(target=run, name="persistence", daemon=True)
+        thread.start()
+        return thread
+
+    def _after_scan(self) -> None:
+        if self.checks is None or self.cancelled.is_set():
+            return
+        try:
+            if self.options.integrity:
+                self.status("integrity", "Checking installed packages…")
+                self.checks.integrity(self.setid)
+            if self.options.tools and not self.cancelled.is_set():
+                self.checks.run_tools()
+        except Exception as exc:
+            logger.exception("integrity checks failed")
+            self.summary.checks["error"] = f"{type(exc).__name__}: {exc}"[:500]
 
     def _dispatch(self, pool: WorkerPool, items: queue.Queue, stats: walker.WalkStats) -> None:
         next_id = 0
@@ -219,8 +321,9 @@ class ScanJob:
                 path = names.to_wire(item.relpath)
                 self._current = f"{volume}:{path}"
                 try:
-                    pool.submit(worker, next_id, {"path": path, "mode": self.options.mode}, item.fd,
-                                (volume, path, item.size))
+                    job = {"path": path, "mode": self.options.mode,
+                           "force": (volume, item.relpath) in self.forced}
+                    pool.submit(worker, next_id, job, item.fd, (volume, path, item.size))
                 except OSError as exc:
                     self.summary.errors += 1
                     self._sample_error(item.relpath, f"could not hand file to engine: {exc}")
@@ -263,11 +366,7 @@ class ScanJob:
                             details=raw.get("details") if isinstance(raw.get("details"), dict) else {})
             if result.get("known_good"):
                 det.details["known_good"] = True
-            if det.key in self.seen_detections:
-                continue
-            self.seen_detections.add(det.key)
-            self.summary.detections += 1
-            self.emit("scan.detection", det.to_dict())
+            self.emit_detection(det)
 
     def _sample_error(self, path: bytes, message: str) -> None:
         if len(self.summary.error_samples) < 200:

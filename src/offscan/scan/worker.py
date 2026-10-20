@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import socket
+import struct
 import sys
 import time
 from pathlib import Path
@@ -23,7 +24,7 @@ from typing import Any
 
 from .. import privdrop
 from . import clamd as clamd_mod
-from . import hashdb, selection, yara_engine
+from . import hashdb, pe, selection, yara_engine
 from .results import clamav_severity, yara_severity
 
 READ_CHUNK = 1 << 20
@@ -40,6 +41,7 @@ class Engines:
         self.manifest = manifest
         self.hash_dbs: list[tuple[str, hashdb.HashDB]] = []
         self.known_good: hashdb.HashDB | None = None
+        self.authentihash: hashdb.HashDB | None = None
         self.hash_meta: dict[str, dict[str, Any]] = manifest.get("hash_sources", {})
         engines = set(config.get("engines", []))
         if "hashes" in engines:
@@ -55,6 +57,12 @@ class Engines:
                     self.known_good = hashdb.HashDB(runtime / "hashes" / kg)
                 except (OSError, hashdb.HashDBError) as exc:
                     self.status.setdefault("errors", []).append(f"{kg}: {exc}")
+            ah = manifest.get("hashes", {}).get("authentihash")
+            if ah:
+                try:
+                    self.authentihash = hashdb.HashDB(runtime / "hashes" / ah)
+                except (OSError, hashdb.HashDBError) as exc:
+                    self.status.setdefault("errors", []).append(f"{ah}: {exc}")
             self.status["hashes"] = sum(len(db) for _, db in self.hash_dbs)
         self.yara: yara_engine.Scanner | None = None
         yinfo = manifest.get("yara") or {}
@@ -149,6 +157,8 @@ def process(engines: Engines, job: dict[str, Any], fd: int) -> dict[str, Any]:
                 "severity": meta.get("severity", "high"), "source": source,
                 "category": meta.get("category", "malware"), "sha256": sha, "size": size,
                 "details": {"list": meta.get("name", source), "database": name}})
+    if data is not None and engines.authentihash is not None and data[:2] == b"MZ":
+        _authentihash(engines, data, relpath, sha, size, out)
     if engines.known_good is not None and engines.known_good.lookup(raw):
         out["known_good"] = True
     if data is not None and engines.yara is not None:
@@ -195,6 +205,28 @@ def process(engines: Engines, job: dict[str, Any], fd: int) -> dict[str, Any]:
         except (OSError, clamd_mod.ClamdError) as exc:
             out["errors"].append(f"ClamAV: {exc}")
     return out
+
+
+def _authentihash(engines: Engines, data: bytes, relpath: str, sha: str, size: int,
+                  out: dict[str, Any]) -> None:
+    """Drivers: look up the Authenticode hash too (catches re-signed copies)."""
+    try:
+        info = pe.parse(data)
+        if info is None or not (info.subsystem == pe.SUBSYSTEM_NATIVE or relpath.lower().endswith(".sys")):
+            return
+        digest = pe.authentihash(data, info)
+    except (ValueError, IndexError, struct.error):
+        return
+    if digest is None or engines.authentihash is None:
+        return
+    for source in engines.authentihash.lookup(digest):
+        meta = engines.hash_meta.get(source, {})
+        out["detections"].append({
+            "engine": "hash", "signature": meta.get("signature", f"{source}:authentihash"),
+            "severity": meta.get("severity", "high"), "source": source,
+            "category": meta.get("category", "malware"), "sha256": sha, "size": size,
+            "details": {"list": meta.get("name", source), "hash": "authentihash",
+                        "authentihash": digest.hex()}})
 
 
 def main() -> None:

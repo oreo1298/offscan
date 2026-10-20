@@ -22,6 +22,7 @@ from ..safefs import O_PATH, RootFS, open_regular_at
 from . import selection
 
 MAX_DEPTH = 128
+MAX_SETID = 20_000
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
@@ -43,6 +44,7 @@ class WalkStats:
     symlinks: int = 0
     errors: list[tuple[bytes, str]] = field(default_factory=list)
     error_count: int = 0
+    setid: list[dict] = field(default_factory=list)      # SUID/SGID files seen (for integrity checks)
 
     def error(self, path: bytes, message: str) -> None:
         self.error_count += 1
@@ -136,6 +138,8 @@ def _walk_dir(dir_fd: int, relpath: bytes, depth: int, mode: str, stop: threadin
                 continue
             stats.files += 1
             stats.bytes += est.st_size
+            if mode_bits & (stat.S_ISUID | stat.S_ISGID) and len(stats.setid) < MAX_SETID:
+                stats.setid.append({"path": child, "mode": mode_bits, "uid": est.st_uid})
             if not open_files:
                 yield FileItem(child, -1, est.st_size, est.st_mtime, est.st_uid)
                 continue

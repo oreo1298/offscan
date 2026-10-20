@@ -270,6 +270,15 @@ validation, uneven packaging (no Fedora/openSUSE). So **re-implement its semanti
   * web shells
 * journald offline: `journalctl -D <mnt>/var/log/journal -o json` (host must be ≥ target).
 
+### Verified while building M4 (2026-10-20)
+
+* **rpm ndb `Packages.db`:** header `RpmP`; 16-byte slots `Slot`, pkgidx, blkoff, blkcnt at offset 32; blob at `blkoff*16` = `BlbS`, pkgidx, generation, length + header blob, with the `BlbE` trailer in the last 4 bytes of the block range. All little-endian. [V: databases created with rpm 4.18.2 `--define '_db_backend ndb'`]
+* **rpm sqlite:** `Packages(hnum, blob)`, with the blob = header without lead (`il`, `dl` big-endian, index, data). [V: same]
+* **Authenticode hash:** hashing the file minus CheckSum, the Certificate Table directory entry and the certificate data equals osslsigncode 2.8's "Calculated message digest" for PE32 and PE32+, signed and unsigned. [V]
+* **Hayabusa (main, 2026-10):** `dfir-timeline -d DIR -t jsonl -o FILE -w -q -Q -K -C -m LEVEL -r RULES`; `-t` csv|json|jsonl; 3.x used `json-timeline -L`. JSONL fields: Timestamp, RuleTitle, Level (crit/high/med/low/info), Computer, Channel, EventID, RecordID, Details, RuleID. [V: `src/detections/configs.rs`, `config/default_profile.yaml`]
+* **Chainsaw:** `chainsaw hunt RULES PATH --json -q --skip-errors [-s SIGMA --mapping mappings/sigma-event-logs-all.yml]`. [V: README]
+* **chkrootkit 0.58b:** refuses to run unless `id` says uid 0. `-p DIR:…` picks the external tools it uses. So a shim `id` plus `setpriv --reuid=… --inh-caps=-all,+dac_read_search --ambient-caps=… --bounding-set=… --no-new-privs` runs it as an unprivileged reader. File tests under `-r` work; `ifconfig` and other host tests are left out. [V]
+
 ## 9. Licence compatibility (offscan = GPL-3.0-or-later)
 
 | Component | Licence | How used | OK? |

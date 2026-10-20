@@ -96,7 +96,7 @@ def mounted(dev: str, fstype: str | None = None, options: str = "") -> Iterator[
         mnt.rmdir()
 
 
-def populate_linux(root: Path, distro: str = "Fixture Linux 1.0") -> None:
+def populate_linux(root: Path, distro: str = "Fixture Linux 1.0", persistence: bool = True) -> None:
     (root / "etc").mkdir(exist_ok=True)
     (root / "usr/lib").mkdir(parents=True, exist_ok=True)
     (root / "usr/bin").mkdir(parents=True, exist_ok=True)
@@ -107,14 +107,66 @@ def populate_linux(root: Path, distro: str = "Fixture Linux 1.0") -> None:
     (root / "home/user").mkdir(parents=True)
     (root / "home/user/eicar.com").write_bytes(eicar())
     os.symlink("/etc/shadow", root / "home/user/escape-link")
+    if persistence:
+        plant_linux_persistence(root)
+
+
+LS_PACKAGED = b"\x7fELF packaged ls"
+SSH_KEY = "AAAAC3NzaC1lZDI1NTE5AAAAIGJ0ZXN0a2V5Zm9yb2Zmc2NhbnVuaXR0ZXN0c29ubHkx"
+
+
+def plant_linux_persistence(root: Path) -> None:
+    """A cron backdoor, a systemd unit, ld.so.preload, an SSH key, a modified packaged file, SUID files."""
+    files = {
+        "etc/passwd": "root:x:0:0:root:/root:/bin/bash\nuser:x:1000:1000::/home/user:/bin/bash\n",
+        # The cron entry starts a file in a folder that quick scans skip: it must be scanned anyway.
+        "etc/cron.d/backup": "@reboot root /usr/share/doc/.cache/helper --quiet\n",
+        "etc/systemd/system/updater.service": "[Service]\nExecStart=/tmp/.x/updater --daemon\n",
+        "etc/ld.so.preload": "/usr/lib/libhide.so\n",
+        "home/user/.ssh/authorized_keys": f"ssh-ed25519 {SSH_KEY} attacker@example\n",
+        "usr/bin/ls": "\x7fELF trojaned ls",
+        "var/lib/dpkg/status": "Package: coreutils\nStatus: install ok installed\n\n",
+        "var/lib/dpkg/info/coreutils.md5sums":
+            f"{hashlib.md5(LS_PACKAGED).hexdigest()}  usr/bin/ls\n",          # dpkg's format
+        "var/lib/dpkg/info/coreutils.list": "/usr/bin/ls\n",
+    }
+    for rel, content in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    wants = root / "etc/systemd/system/multi-user.target.wants"
+    wants.mkdir(parents=True)
+    os.symlink("/etc/systemd/system/updater.service", wants / "updater.service")
+    helper = root / "usr/share/doc/.cache/helper"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(eicar())
+    helper.chmod(0o755)
+    hidden = root / "tmp/.x"
+    hidden.mkdir(parents=True)
+    (hidden / "su").write_bytes(b"\x7fELF fake")
+    (hidden / "su").chmod(0o4755)
 
 
 def populate_windows(root: Path, hibernated: bool) -> None:
+    from support.regwriter import REG_EXPAND_SZ, Key, write_hive
     config = root / "Windows" / "System32" / "config"
     config.mkdir(parents=True)
-    (config / "SOFTWARE").write_bytes(b"not a real hive")
+    software = Key("ROOT")
+    software.key("Microsoft\\Windows NT\\CurrentVersion").set("ProductName", "Windows 10 Pro") \
+        .set("CurrentBuild", "22631").set("DisplayVersion", "23H2").set("UBR", 4317)
+    run = software.key("Microsoft\\Windows\\CurrentVersion\\Run")
+    run.set("SecurityHealth", "%windir%\\system32\\SecurityHealthSystray.exe", REG_EXPAND_SZ)
+    # Starts a file in a folder that quick scans skip: it must be scanned anyway.
+    run.set("FontCache", "C:\\Windows\\Fonts\\fontcache.dat -background")
+    write_hive(software, config / "SOFTWARE", "SOFTWARE")
+    (root / "Windows" / "Fonts").mkdir(parents=True)
+    (root / "Windows" / "Fonts" / "fontcache.dat").write_bytes(eicar())
     (root / "Users" / "Alice" / "Downloads").mkdir(parents=True)
     (root / "Users" / "Alice" / "Downloads" / "eicar.com").write_bytes(eicar())
+    ntuser = Key("ROOT")
+    ntuser.key("Software\\Microsoft\\Windows\\CurrentVersion\\Run").set(
+        "Updater", "powershell.exe -nop -w hidden -enc SQBFAFgA")
+    write_hive(ntuser, root / "Users" / "Alice" / "NTUSER.DAT", "NTUSER.DAT")
     header = b"HIBR" if hibernated else b"\0\0\0\0"
     (root / "hiberfil.sys").write_bytes(header + b"\0" * (64 * 1024 - 4))
 

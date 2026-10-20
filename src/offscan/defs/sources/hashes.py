@@ -194,9 +194,10 @@ class LOLDrivers(Source):
     lists = (
         ("samples_malicious.sha256", "hashes", "loldrivers-malicious", "malicious_driver", "high"),
         ("samples_vulnerable.sha256", "hashes", "loldrivers-vulnerable", "vulnerable_driver", "medium"),
-        ("authentihash_samples_malicious.sha256", "authentihash", "loldrivers-malicious",
+        # Separate ids: hash_sources metadata is keyed by id and the signature names differ.
+        ("authentihash_samples_malicious.sha256", "authentihash", "loldrivers-malicious-authentihash",
          "malicious_driver", "high"),
-        ("authentihash_samples_vulnerable.sha256", "authentihash", "loldrivers-vulnerable",
+        ("authentihash_samples_vulnerable.sha256", "authentihash", "loldrivers-vulnerable-authentihash",
          "vulnerable_driver", "medium"),
     )
 

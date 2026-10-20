@@ -46,6 +46,7 @@ def test_list_probe_mount_read_never_writes(no_leaks, target_disk, helper, tmp_p
     assert linux["fstype"] == "ext4" and linux["os"]["name"] == "Fixture Linux 1.0"
     assert any(w["code"] == "needs_recovery" for w in linux["warnings"])
     assert windows["fstype"] == "ntfs" and windows["os"]["family"] == "windows"
+    assert windows["os"]["name"] == "Windows 11 Pro" and windows["os"]["build"] == "22631.4317"
     assert windows["hibernation"]["hibernated"] is True
     assert any(w["code"] == "hibernated" for w in windows["warnings"])
     assert xfs["fstype"] == "xfs"

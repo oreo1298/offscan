@@ -127,10 +127,12 @@ class History:
         self.db.commit()
 
     def is_false_positive(self, det: Detection) -> bool:
-        if not det.sha256:
+        """``sha256`` holds the file hash, or a persistence entry's fingerprint (``Detection.identity``)."""
+        identity = det.identity
+        if not identity:
             return False
         row = self.db.execute("SELECT 1 FROM false_positives WHERE engine = ? AND signature = ? AND "
-                              "sha256 = ?", (det.engine, det.signature, det.sha256)).fetchone()
+                              "sha256 = ?", (det.engine, det.signature, identity)).fetchone()
         return row is not None
 
     def false_positives(self) -> list[dict[str, Any]]:

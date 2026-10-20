@@ -105,7 +105,13 @@ VERSION_VALUES = ("ProductName", "CurrentBuild", "CurrentBuildNumber", "DisplayV
 def task_windows_version(args: dict[str, Any], fds: list[int]) -> dict[str, Any]:
     """Sandbox task: read version values from a SOFTWARE hive passed as fd 0 of ``fds``."""
     from regipy.registry import RegistryHive
-    hive = RegistryHive(f"/proc/self/fd/{fds[0]}")
+
+    from ..persistence.filepack import fd_path
+    path, copy = fd_path(fds[0])
+    try:
+        hive = RegistryHive(path)
+    finally:
+        os.close(copy)
     key = hive.get_key("\\Microsoft\\Windows NT\\CurrentVersion")
     values: dict[str, Any] = {}
     for value in key.iter_values():

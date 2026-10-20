@@ -22,12 +22,22 @@ from . import privdrop
 # task name -> "module:function" (only offscan modules are allowed)
 TASKS: dict[str, str] = {
     "windows.version": "offscan.drives.osdetect:task_windows_version",
-    "windows.hive_values": "offscan.persistence.windows.registry:task_hive_values",
-    "windows.persistence": "offscan.persistence.windows.registry:task_persistence",
+    "windows.persistence": "offscan.persistence.windows:task_persistence",
+    "linux.persistence": "offscan.persistence.linux:task_persistence",
+    "packages.list": "offscan.persistence.packages:task_list",
     "selftest.echo": "offscan.sandbox:task_echo",
 }
 
 DEFAULT_LIMITS = {"memory": 2 << 30, "cpu_seconds": 120, "file_size": 0, "open_files": 256}
+
+# Per-task overrides: hive log replay writes a private temporary copy, and
+# persistence tasks receive many descriptors (task XML, cron files, ...).
+TASK_LIMITS: dict[str, dict[str, int]] = {
+    "windows.version": {"file_size": 2 << 30},
+    "windows.persistence": {"file_size": 2 << 30, "open_files": 8192, "cpu_seconds": 600},
+    "linux.persistence": {"open_files": 8192, "cpu_seconds": 300},
+    "packages.list": {"file_size": 2 << 30, "cpu_seconds": 600, "open_files": 1024},
+}
 
 _BOOT = (
     "import json,sys\n"
@@ -63,8 +73,8 @@ def run(task: str, args: dict[str, Any] | None = None, fds: list[int] | None = N
         raise SandboxError(f"unknown sandbox task {task!r}")
     fds = list(fds or [])
     ident = privdrop.worker_identity()
-    request = json.dumps({"task": task, "args": args or {}, "fds": fds,
-                          "limits": {**DEFAULT_LIMITS, **(limits or {})}}).encode()
+    limits = {**DEFAULT_LIMITS, **TASK_LIMITS.get(task, {}), **(limits or {})}
+    request = json.dumps({"task": task, "args": args or {}, "fds": fds, "limits": limits}).encode()
     kwargs: dict[str, Any] = {}
     if ident is not None:
         kwargs.update(user=ident.uid, group=ident.gid, extra_groups=[])

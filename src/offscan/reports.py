@@ -15,10 +15,11 @@ import platform
 from typing import Any
 
 from . import appinfo, fmt, names
-from .scan.results import SEVERITY_RANK
+from .scan.results import CHECK_ENGINES, SEVERITY_RANK
 
 FIELDS = ("severity", "volume", "path", "engine", "signature", "sha256", "size", "source",
-          "category", "status", "author")
+          "category", "status", "author", "location", "value", "reasons", "mitre", "user")
+DETAIL_FIELDS = ("author", "location", "value", "mitre", "user")
 
 
 def build(summary: dict[str, Any], options: dict[str, Any], targets: list[dict[str, Any]],
@@ -52,7 +53,10 @@ def to_csv(report: dict[str, Any]) -> str:
     writer.writerow(FIELDS)
     for det in report["detections"]:
         row = dict(det)
-        row["author"] = (det.get("details") or {}).get("author")
+        details = det.get("details") or {}
+        for key in DETAIL_FIELDS:
+            row[key] = details.get(key)
+        row["reasons"] = "; ".join(str(r) for r in details.get("reasons") or [])
         writer.writerow([_csv_cell(row.get(f)) for f in FIELDS])
     return buf.getvalue()
 
@@ -72,11 +76,59 @@ dt { font-weight: 600; }
 """
 
 
+def _check_row(det: dict[str, Any]) -> str:
+    e = html.escape
+    details = det.get("details") or {}
+    reasons = "".join(f"<li>{e(str(r))}</li>" for r in details.get("reasons") or [])
+    mitre = details.get("mitre")
+    return (
+        "<tr>"
+        f"<td class='sev-{e(det.get('severity', ''))}'>{e(det.get('severity', ''))}</td>"
+        f"<td>{e(det.get('volume', ''))}</td>"
+        f"<td>{e(det.get('signature', ''))}<ul class='muted'>{reasons}</ul></td>"
+        f"<td><code>{e(names.display(str(details.get('location') or det.get('path', ''))))}</code></td>"
+        f"<td><code>{e(names.display(str(details.get('value') or '')))}</code></td>"
+        f"<td>{e(str(mitre)) if mitre else ''}</td>"
+        f"<td>{e(det.get('status', 'open'))}</td>"
+        "</tr>")
+
+
+def _checks_summary(checks: dict[str, Any]) -> str:
+    e = html.escape
+    items = []
+    for key, info in checks.items():
+        if not isinstance(info, dict):
+            continue
+        parts = [f"<b>{e(str(info.get('installation', key)))}</b> ({e(key)})"]
+        pers = info.get("persistence") or {}
+        if pers.get("error"):
+            parts.append(f"autostart checks failed: {e(str(pers['error']))}")
+        elif pers:
+            parts.append(f"{pers.get('findings', 0)} autostart entries")
+        integ = info.get("integrity") or {}
+        if integ.get("error"):
+            parts.append(f"package check: {e(str(integ['error']))}")
+        elif integ:
+            parts.append(f"{e(str(integ.get('manager')))}: {integ.get('checked', 0)} files of "
+                         f"{integ.get('packages', 0)} packages verified, {integ.get('modified', 0)} changed")
+        items.append("<li>" + "; ".join(parts) + "</li>")
+    return "".join(items)
+
+
+CHECK_HEAD = ("<tr><th>Severity</th><th>Volume</th><th>Finding</th><th>Where</th><th>Value</th>"
+              "<th>ATT&amp;CK</th><th>Status</th></tr>")
+
+
 def to_html(report: dict[str, Any]) -> str:
     e = html.escape
     s = report["summary"]
     rows = []
+    check_rows = []
+    inventory_rows = []
     for det in report["detections"]:
+        if det.get("engine") in CHECK_ENGINES:
+            (inventory_rows if det.get("severity") == "info" else check_rows).append(_check_row(det))
+            continue
         details = det.get("details") or {}
         extra = []
         for key in ("author", "description", "license"):
@@ -113,16 +165,23 @@ def to_html(report: dict[str, Any]) -> str:
 <dt>Mode</dt><dd>{e(report['options'].get('mode', '?'))}</dd>
 <dt>Files</dt><dd>{s.get('files_scanned', 0)} scanned, {s.get('files_skipped', 0)} skipped,
 {e(fmt.size(s.get('bytes_scanned', 0)))}</dd>
-<dt>Detections</dt><dd>{len(report['detections'])}</dd>
+<dt>Detections</dt><dd>{len(rows)} file detections, {len(check_rows)} persistence and integrity findings,
+{len(inventory_rows)} informational entries</dd>
 <dt>Errors</dt><dd>{s.get('errors', 0)}</dd>
 <dt>Generator</dt><dd>{e(report['generator'])} on {e(report['host'])}</dd>
 </dl>
-<h2>Targets</h2><ul>{targets}</ul>
+<h2>Targets</h2><ul>{targets}{_checks_summary(s.get('checks') or {})}</ul>
 <h2>Detections</h2>
 <table><thead><tr><th>Severity</th><th>Volume</th><th>Path</th><th>Engine</th><th>Signature</th>
 <th>SHA-256</th><th>Status</th></tr></thead><tbody>
 {''.join(rows) or '<tr><td colspan="7">Nothing found.</td></tr>'}
 </tbody></table>
+<h2>Persistence and integrity</h2>
+<table><thead>{CHECK_HEAD}</thead><tbody>
+{''.join(check_rows) or '<tr><td colspan="7">Nothing suspicious.</td></tr>'}
+</tbody></table>
+<details><summary>Informational autostart entries ({len(inventory_rows)})</summary>
+<table><thead>{CHECK_HEAD}</thead><tbody>{''.join(inventory_rows)}</tbody></table></details>
 {f'<h2>Errors (first 100)</h2><ul>{errors}</ul>' if errors else ''}
 </body></html>
 """

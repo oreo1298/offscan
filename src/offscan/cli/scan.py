@@ -12,7 +12,8 @@ from typing import Any
 from .. import fmt, names, reports
 from ..history import History
 from ..protocol import RemoteError
-from ..scan.options import ENGINES, Limits, ScanOptions, parse_size
+from ..scan.options import ENGINES, TOOLS, Limits, ScanOptions, parse_size
+from ..scan.results import CHECK_ENGINES
 from ..scanning import ScanSession
 from .common import start_helper, volume_arg
 
@@ -36,6 +37,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--archive-depth", type=int, default=17, help="maximum archive nesting (default 17)")
     p.add_argument("--workers", type=int, default=0, help="parallel scan processes (default: auto)")
     p.add_argument("--pua", action="store_true", help="also report potentially unwanted applications")
+    p.add_argument("--no-persistence", action="store_true",
+                   help="skip the autostart/persistence checks (registry, tasks, cron, systemd, ...)")
+    p.add_argument("--no-integrity", action="store_true",
+                   help="skip package verification and the search for unpackaged system files")
+    p.add_argument("--tool", dest="tools", action="append", default=[], choices=TOOLS,
+                   help="also run this installed checker (chkrootkit, hayabusa, chainsaw; repeatable)")
+    p.add_argument("--all", dest="show_all", action="store_true",
+                   help="also list informational autostart entries")
     p.add_argument("--definitions", type=Path, help="use this definition set instead of the active one")
     p.add_argument("--report", action="append", default=[], metavar="FILE",
                    help="write a report (.html, .json or .csv; repeatable)")
@@ -52,14 +61,20 @@ def _options(args: argparse.Namespace) -> ScanOptions:
     limits.max_hash_size = max(limits.max_hash_size, limits.max_file_size)
     opts = ScanOptions(volumes=[volume_arg(v) for v in args.volumes], mode=mode,
                        paths=args.paths or [], engines=[e for e in args.engines.split(",") if e],
-                       limits=limits, workers=args.workers, detect_pua=args.pua)
+                       limits=limits, workers=args.workers, detect_pua=args.pua,
+                       persistence=not args.no_persistence, integrity=not args.no_integrity, tools=args.tools)
     opts.validate()
     return opts
 
 
+def is_inventory(det: dict[str, Any]) -> bool:
+    return det.get("engine") in CHECK_ENGINES and det.get("severity") == "info"
+
+
 class Printer:
-    def __init__(self, quiet: bool):
+    def __init__(self, quiet: bool, show_all: bool = False):
         self.quiet = quiet
+        self.show_all = show_all
         self.tty = sys.stderr.isatty()
         self.last_len = 0
 
@@ -67,7 +82,19 @@ class Printer:
         if self.quiet:
             return
         if event == "scan.detection":
+            if is_inventory(data) and not self.show_all:
+                return
             self._clear()
+            if data.get("engine") in CHECK_ENGINES:
+                details = data.get("details") or {}
+                where = names.display(str(details.get("location") or data["path"]), 200)
+                print(f"[{data['severity'].upper():6}] {data['volume']}: {names.display(data['signature'])}\n"
+                      f"         {where}", flush=True)
+                if details.get("value"):
+                    print(f"         {names.display(str(details['value']), 200)}")
+                for reason in details.get("reasons") or []:
+                    print(f"         - {names.display(str(reason), 200)}")
+                return
             print(f"[{data['severity'].upper():6}] {data['volume']}:{names.display(data['path'])}  "
                   f"{data['engine']}: {data['signature']}", flush=True)
         elif event == "scan.status":
@@ -102,7 +129,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    printer = Printer(quiet=args.json)
+    printer = Printer(quiet=args.json, show_all=args.show_all)
     history = None if args.no_history else History()
     with start_helper(args) as client:
         session = ScanSession(client, options, args.definitions, printer, history)
@@ -130,16 +157,23 @@ def cmd_scan(args: argparse.Namespace) -> int:
     else:
         print(f"{summary['state']}: {summary['files_scanned']} files scanned "
               f"({fmt.size(summary['bytes_scanned'])}), {summary['files_skipped']} skipped, "
-              f"{len(dets)} detections, {summary['errors']} errors, "
+              f"{summary.get('detections', len(dets))} findings, {summary['errors']} errors, "
               f"{fmt.duration(summary['finished'] - summary['started'])}")
         for name, info in summary.get("engines", {}).items():
             if isinstance(info, dict) and info.get("error"):
                 print(f"warning: {name}: {info['error']}", file=sys.stderr)
+        if summary.get("inventory"):
+            print(f"{summary['inventory']} informational autostart entries"
+                  + ("" if args.show_all else " (list them with --all or in the report)"))
+        for key, info in (summary.get("checks") or {}).items():
+            for phase in ("persistence", "integrity"):
+                if isinstance(info, dict) and isinstance(info.get(phase), dict) and info[phase].get("error"):
+                    print(f"warning: {key}: {phase} checks: {info[phase]['error']}", file=sys.stderr)
         if summary.get("message"):
             print(summary["message"], file=sys.stderr)
     if summary["state"] == "failed":
         return EXIT_ERROR
-    real = [d for d in dets if not d.get("details", {}).get("false_positive")]
+    real = [d for d in dets if not d.get("details", {}).get("false_positive") and not is_inventory(d)]
     if real:
         return EXIT_DETECTIONS
     return EXIT_INCOMPLETE if summary["state"] != "finished" or summary["errors"] else EXIT_OK

@@ -36,11 +36,27 @@ def _split(path: bytes) -> list[bytes]:
 class RootFS:
     """A directory treated as the root of an untrusted filesystem."""
 
-    def __init__(self, root: str | bytes | os.PathLike[str], max_symlinks: int = MAX_SYMLINKS):
+    def __init__(self, root: str | bytes | os.PathLike[str], max_symlinks: int = MAX_SYMLINKS,
+                 _fd: int | None = None):
         self.root_path = os.fsencode(root)
-        self.root_fd = os.open(self.root_path, _DIR_FLAGS)
+        self.root_fd = os.open(self.root_path, _DIR_FLAGS) if _fd is None else _fd
         self.root_stat = os.fstat(self.root_fd)
         self.max_symlinks = max_symlinks
+
+    def subroot(self, path: str | bytes) -> RootFS:
+        """A new RootFS for a directory inside this one (e.g. a btrfs subvolume ``/@``).
+
+        The directory is resolved inside the current root, so a symlinked
+        ``@`` cannot point the new root at the host.
+        """
+        parent, name = self.resolve(path)
+        try:
+            fd = os.open(name, _DIR_FLAGS | os.O_NOFOLLOW, dir_fd=parent)
+        finally:
+            os.close(parent)
+        real = self.realpath(path)
+        return RootFS(self.root_path.rstrip(b"/") + real if real != b"/" else self.root_path,
+                      self.max_symlinks, _fd=fd)
 
     def close(self) -> None:
         if self.root_fd >= 0:
@@ -129,6 +145,13 @@ class RootFS:
         parent, name = self.resolve(path, follow_last=True)
         try:
             return os.stat(name, dir_fd=parent, follow_symlinks=False)
+        finally:
+            os.close(parent)
+
+    def readlink(self, path: str | bytes) -> bytes:
+        parent, name = self.resolve(path, follow_last=False)
+        try:
+            return os.readlink(name, dir_fd=parent)
         finally:
             os.close(parent)
 
