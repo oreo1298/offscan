@@ -27,15 +27,13 @@ dependencies = []
 [project.optional-dependencies]
 gui = ["PySide6-Essentials>=6.4"]
 engines = ["yara-x>=1.0"]
-windows = ["regipy>=5.0", "pefile>=2023.2.7"]
+windows = ["regipy>=5.0"]
 bundles = ["cryptography>=38"]
 full = [
-    "PySide6-Essentials>=6.4", "yara-x>=1.0", "regipy>=5.0",
-    "pefile>=2023.2.7", "cryptography>=38",
+    "PySide6-Essentials>=6.4", "yara-x>=1.0", "regipy>=5.0", "cryptography>=38",
 ]
 dev = [
-    "PySide6-Essentials>=6.4", "yara-x>=1.0", "regipy>=5.0",
-    "pefile>=2023.2.7", "cryptography>=38",
+    "PySide6-Essentials>=6.4", "yara-x>=1.0", "regipy>=5.0", "cryptography>=38",
     "pytest>=7.4", "pytest-qt>=4.3", "pytest-timeout>=2.1", "hypothesis>=6", "ruff>=0.5",
 ]
 

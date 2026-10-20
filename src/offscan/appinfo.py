@@ -38,9 +38,9 @@ DESKTOP_FILE = f"{APP_ID}.desktop"
 LIB_DIR = f"/usr/lib/{NAME}"
 PYTHON_DIR = f"{LIB_DIR}/python"
 HELPER_PATH = f"{LIB_DIR}/{HELPER_NAME}"
-OPT_DIR = f"/opt/{NAME}"
-VENDOR_DIR = f"{OPT_DIR}/vendor"
-VENV_DIR = f"{OPT_DIR}/venv"
+# Python packages that distributions do not ship (yara-x, regipy and its
+# dependencies), unpacked from pinned wheels by packaging/build.py.
+VENDOR_DIR = f"{LIB_DIR}/vendor"
 SYSTEM_STATE_DIR = f"/var/lib/{NAME}"
 RUNTIME_DIR = f"/run/{NAME}"
 

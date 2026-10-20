@@ -68,7 +68,6 @@ def collect() -> dict[str, Any]:
             "yara": _module_version("yara"),
             "regipy": _module_version("regipy"),
             "cryptography": _module_version("cryptography"),
-            "pefile": _module_version("pefile"),
         },
         "tools": {name: tools.find(name) for name in tool_names},
         "kernel": {"release": platform.release(),

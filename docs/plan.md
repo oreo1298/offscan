@@ -12,7 +12,7 @@ The research behind these decisions is in `docs/research.md`.
 | Workers | Scan workers and clamd run unprivileged as the invoking user; the helper passes file descriptors to the workers; the scan side has no network namespace |
 | ClamAV | Private on-demand clamd (config and socket in a 0700 `/tmp` runtime dir, files streamed with INSTREAM; AppArmor-compatible). Official DB from the system freshclam where one runs (always on Debian/Ubuntu), otherwise a private freshclam |
 | Debian/Ubuntu deps | Depends `clamav`, `clamav-freshclam`; Recommends `clamav-daemon` |
-| YARA | YARA-X (vendored abi3 wheel in `/opt/offscan/vendor`); distro yara-python as fallback |
+| YARA | YARA-X (vendored abi3 wheel in `/usr/lib/offscan/vendor`); distro yara-python as fallback |
 | Registry | regipy (vendored); transaction logs replayed in memory only |
 | Packages | Per-architecture (x86_64, aarch64) because of vendored wheels; nfpm for deb/rpm, hand-written PKGBUILD |
 | Default feeds | ClamAV official, Sanesecurity malware subset, LMD, YARA Forge core, LOLDrivers, ESET malware-ioc |

@@ -7,6 +7,9 @@ and screen-reader basics, and that slow helper calls never block the event loop.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -21,7 +24,7 @@ from offscan.gui import theme, widgets  # noqa: E402
 from offscan.gui.bridge import Bridge  # noqa: E402
 from offscan.gui.pages import results as results_page  # noqa: E402
 from offscan.gui.qt import QtCore, QtGui, QtWidgets  # noqa: E402
-from offscan.gui.window import MainWindow  # noqa: E402
+from offscan.gui.window import PAGES, MainWindow  # noqa: E402
 from offscan.history import History  # noqa: E402
 from offscan.scan.results import Detection  # noqa: E402
 from offscan.settings import Settings  # noqa: E402
@@ -334,3 +337,14 @@ def test_remedy_targets() -> None:
     target, why = results_page.remedy_target(det(engine="integrity", check="integrity.package_modified",
                                                  path="/usr/bin/ls", package="coreutils"))
     assert target == "/usr/bin/ls" and "reinstall coreutils" in why
+
+
+def test_self_check_builds_every_page(xdg_home: Path) -> None:
+    """``offscan-gui --self-check`` is what the package tests run after installing."""
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen",
+           "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")}
+    out = subprocess.run([sys.executable, "-m", "offscan.gui.app", "--self-check"], env=env,
+                         capture_output=True, text=True, timeout=120, check=False)
+    assert out.returncode == 0, out.stderr
+    assert "self-check: OK" in out.stdout and f"{len(PAGES)} pages" in out.stdout
+    assert not (xdg_home / "data").exists()           # it writes no history or settings

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Generated from packaging/templates/scripts/preremove.sh.in; do not edit.
+# rpm passes the number of copies left after the operation: 1 or more is an
+# upgrade, and the new package's byte-code must stay.
+case "$1" in
+    [1-9]*) exit 0 ;;
+esac
+# Remove the byte-code compiled after installation (dpkg and pacman upgrades
+# compile it again in the new package's post-install step).
+if [ -d "@LIB_DIR@" ]; then
+    find "@LIB_DIR@" -depth -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+fi
+exit 0

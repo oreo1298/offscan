@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=${DISPLAY_NAME}
+GenericName=Offline Malware Scanner
+Comment=Scan the drives of switched-off Windows and Linux systems for malware
+Exec=${GUI_NAME}
+Icon=${ICON_NAME}
+Terminal=false
+Categories=System;Security;
+Keywords=malware;virus;antivirus;scanner;rootkit;persistence;drive;rescue;offline;forensics;
+StartupNotify=true

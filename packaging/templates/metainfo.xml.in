@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated from packaging/templates/metainfo.xml.in; do not edit. -->
+<component type="desktop-application">
+  <id>${APP_ID}</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>${LICENSE}</project_license>
+  <name>${DISPLAY_NAME}</name>
+  <summary>${SUMMARY}</summary>
+  <description>
+    <p>
+      ${DISPLAY_NAME} scans the drives of Windows and Linux installations that are not running
+      (disks you attach, or your own disks after booting from a live USB stick) for malware,
+      autostart persistence and modified system files.
+    </p>
+    <ul>
+      <li>Drives are only ever mounted read-only; changing a file needs an explicit, confirmed choice</li>
+      <li>ClamAV, YARA-X and hash lists with public definitions from many sources</li>
+      <li>Offline update bundles for computers without internet</li>
+      <li>Checks registry Run keys, services, scheduled tasks, cron, systemd units and more</li>
+      <li>Verifies installed dpkg, rpm and pacman packages</li>
+      <li>No telemetry: the network is used only to download definitions</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">${APP_ID}.desktop</launchable>
+  <url type="homepage">${HOMEPAGE}</url>
+  <url type="bugtracker">${HOMEPAGE}/issues</url>
+  <developer id="${APP_ID}">
+    <name>${DISPLAY_NAME} developers</name>
+  </developer>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Choosing the drives to scan</caption>
+      <image>https://raw.githubusercontent.com/oreo1298/offscan/main/docs/screenshots/drives-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Results with persistence findings</caption>
+      <image>https://raw.githubusercontent.com/oreo1298/offscan/main/docs/screenshots/results-light.png</image>
+    </screenshot>
+  </screenshots>
+  <provides>
+    <binary>${NAME}</binary>
+    <binary>${GUI_NAME}</binary>
+  </provides>
+  <categories>
+    <category>System</category>
+    <category>Security</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="${VERSION}" date="${RELEASE_DATE}"/>
+  </releases>
+</component>

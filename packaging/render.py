@@ -3,13 +3,16 @@
 
 Every ``${NAME}``-style placeholder in ``packaging/templates/*.in`` is
 replaced by the attribute of the same name in appinfo, so renaming the
-application only ever means editing appinfo.py.
+application only ever means editing appinfo.py.  Shell templates
+(``*.sh.in``, ``PKGBUILD.in``, ``pacman.install.in``) use ``@NAME@`` instead,
+because ``$`` belongs to the shell there.
 
 Usage: ``python3 packaging/render.py OUTDIR [TEMPLATE ...]``
 """
 
 from __future__ import annotations
 
+import re
 import runpy
 import string
 import sys
@@ -29,9 +32,23 @@ def appinfo_values() -> dict[str, str]:
     return {k: str(v) for k, v in info.items() if k.isupper() and isinstance(v, (str, int))}
 
 
+AT_TEMPLATES = (".sh.in", "PKGBUILD.in", "pacman.install.in")
+
+
+def substitute_at(text: str, values: dict[str, str]) -> str:
+    """Replace ``@NAME@`` placeholders; an unknown name is an error."""
+    def value(match: re.Match[str]) -> str:
+        if match[1] not in values:
+            raise KeyError(f"unknown placeholder @{match[1]}@")
+        return values[match[1]]
+    return re.sub(r"@([A-Z][A-Z0-9_]*)@", value, text)
+
+
 def render(template: str, values: dict[str, str] | None = None) -> str:
     values = values or appinfo_values()
     text = (TEMPLATES / template).read_text(encoding="utf-8")
+    if template.endswith(AT_TEMPLATES):
+        return substitute_at(text, values)
     return string.Template(text).substitute(values)
 
 

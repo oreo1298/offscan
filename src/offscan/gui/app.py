@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from .. import appinfo, log
+
+if TYPE_CHECKING:
+    from .qt import QtWidgets
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -17,8 +22,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--no-connect", action="store_true",
                         help="do not ask for administrator rights at start-up")
     parser.add_argument("--sudo", action="store_true", help="use sudo instead of pkexec")
+    parser.add_argument("--self-check", action="store_true",
+                        help="build the window without showing it, print the Qt binding and exit")
     args, qt_args = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
-    log.setup("gui", verbose=args.verbose)
+    if args.self_check and not any(os.environ.get(v) for v in ("QT_QPA_PLATFORM", "DISPLAY",
+                                                                  "WAYLAND_DISPLAY")):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    log.setup("gui", verbose=args.verbose, to_file=not args.self_check)
     from ..history import History
     from ..settings import Settings
     from .bridge import Bridge
@@ -34,6 +44,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.setWindowIcon(icon(appinfo.ICON_NAME, "security-high", "drive-harddisk"))
     theme = Theme(app)
     theme.refresh()
+    if args.self_check:
+        return _self_check(app)
     settings = Settings()
     try:
         history: History | None = History()
@@ -48,6 +60,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     code = app.exec()
     bridge.close()
     return int(code)
+
+
+def _self_check(app: QtWidgets.QApplication) -> int:
+    """Build every page without a helper, history or network; used by package tests."""
+    from ..settings import Settings
+    from .bridge import Bridge
+    from .qt import BINDING, BINDING_VERSION, QT_VERSION, QtWidgets
+    from .theme import is_dark
+    from .window import MainWindow
+
+    bridge = Bridge()
+    window = MainWindow(bridge, Settings(), None)
+    for row in range(window.nav.count()):
+        window.nav.setCurrentRow(row)
+        QtWidgets.QApplication.processEvents()
+    pages = window.stack.count()
+    window.close()
+    bridge.close()
+    print(f"{appinfo.GUI_NAME} self-check: OK ({BINDING} {BINDING_VERSION}, "
+          f"Qt {'.'.join(map(str, QT_VERSION))}, platform {app.platformName()}, {pages} pages, "
+          f"{'dark' if is_dark(app.palette()) else 'light'} palette)")
+    return 0
 
 
 if __name__ == "__main__":

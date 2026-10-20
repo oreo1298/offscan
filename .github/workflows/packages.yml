@@ -1,0 +1,71 @@
+name: packages
+
+# Builds the .deb, the Fedora and openSUSE .rpm and the Arch package, then
+# installs, upgrades and removes them (and install.sh) in each distribution.
+
+on:
+  push:
+    branches: [main, dev]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NFPM_VERSION: "2.48.0"
+  NFPM_SHA256: "6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install nfpm
+        run: |
+          curl -fsSLo /tmp/nfpm.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          echo "${NFPM_SHA256}  /tmp/nfpm.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm
+          nfpm --version
+      - name: Validate the desktop entry and AppStream metadata
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q desktop-file-utils appstream
+          python3 packaging/build.py stage --dest /tmp/stage --no-vendor
+          desktop-file-validate /tmp/stage/usr/share/applications/*.desktop
+          appstreamcli validate --no-net --explain /tmp/stage/usr/share/metainfo/*.metainfo.xml
+      - name: Build packages
+        run: tests/packaging/run-containers.sh build
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  install:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - debian:12
+          - debian:13
+          - ubuntu:24.04
+          - ubuntu:26.04
+          - fedora:44
+          - opensuse/tumbleweed
+          - opensuse/leap:16.0
+          - archlinux:latest
+        mode: [package, script]
+    name: ${{ matrix.mode }} on ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist
+      - name: Install, update and remove
+        run: tests/packaging/run-containers.sh run "${{ matrix.image }}" "${{ matrix.mode }}"
