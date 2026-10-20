@@ -25,8 +25,8 @@ your computer, or on your computer's own disks after booting from a live USB sti
   with no network, and only you can open the mounted drives ([security design](docs/security.md)).
 * **Not a real-time scanner.** There is no resident daemon and no on-access protection.
 
-> Status: pre-release (0.1.0.dev0). The packages below are built by CI for every commit;
-> release downloads start with 0.1.0.
+> Status: 0.1.0, the first release. See [CHANGELOG.md](CHANGELOG.md) and the
+> [security design](docs/security.md).
 
 ## Contents
 
@@ -289,6 +289,14 @@ which takes about 30 s and 1 GB of memory.
 **After a major distribution upgrade the program starts slowly.** The packages compile Python
 modules for the Python version found at install time. Reinstall the package, or run
 `sudo ./install.sh --update`, to compile them for the new one.
+
+**A mounted drive cannot be opened from another account.** That is on purpose: only
+root and the account that started Offscan can enter `/run/offscan/mnt`, so other users
+of the computer cannot read the drives you are scanning.
+
+**"external checkers need a kernel with nosymfollow".** chkrootkit, Hayabusa and
+Chainsaw read the drive through paths, which is only safe when the mount can refuse to
+follow symbolic links (Linux 5.10 or newer). The scan itself works on older kernels.
 
 **"The helper speaks a different protocol version".** An update happened while the program
 was running. Close all its windows and start it again.

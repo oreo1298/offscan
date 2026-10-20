@@ -10,7 +10,8 @@ happens.
 1. The helper prepares a plan (`remedy.plan`). It reads the file on the
    **read-only** mount and reports its size and SHA-256. It also checks whether
    the volume can be changed at all. Changes are refused for:
-   * the running system;
+   * the running system, including its boot partitions while they are
+     automounted but not mounted;
    * volumes the computer itself has mounted or stacked (LVM, RAID, dm-crypt
      opened by the host);
    * write-protected devices (lock switch, read-only flag set before we touched
@@ -38,9 +39,11 @@ happens.
   lifted.
 * A writable chain is built on the raw device. Encrypted volumes are opened
   again with the passphrase the user just typed. The filesystem is mounted
-  `rw,nosuid,nodev,noexec,nosymfollow`, so nothing on it can run or gain
-  privileges. Every layer is recorded first in the helper's state file, so a
-  crash leaves nothing behind (the next start cleans it up).
+  `rw,nosuid,nodev,noexec,nosymfollow` in a directory only root can enter (FAT,
+  exFAT and NTFS also get root-only file modes), so nothing on it can run or gain
+  privileges, and no other process can use the writable mount. Every layer is
+  recorded first in the helper's state file, so a crash leaves nothing behind
+  (the next start cleans it up).
 * The file is opened without following links and must be a regular file. It is
   hashed again and must still match. Then:
   * **quarantine:** a XOR-scrambled copy is written to the root-only
@@ -48,11 +51,15 @@ happens.
     Only then is the original unlinked, after checking that the name still
     refers to the same inode, and the directory is synced;
   * **delete:** the same checks, then unlink;
-  * **restore:** the file is created with `O_EXCL` (never over an existing
-    file), then its owner, mode and times are set back.
+  * **restore:** only to the filesystem the file came from (checked by UUID;
+    another path on it is fine). The file is created with `O_EXCL` (never over
+    an existing file), then its owner, mode and times are set back, but never
+    setuid or setgid.
 * Everything is synced and the writable mount and mappings are closed. The
   read-only stack and mounts that existed before are then rebuilt. Device names
-  of mappings can change, and the new ones are returned.
+  of mappings can change, and the new ones are returned. If the writable mount
+  cannot be closed, it is detached and nothing is rebuilt next to it; unplug the
+  drive or restart before using it.
 
 ## The change log
 

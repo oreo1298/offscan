@@ -664,3 +664,14 @@ def test_build_cli_version() -> None:
     out = subprocess.run([sys.executable, "-I", str(ROOT / "packaging" / "build.py"), "version", "deb"],
                          capture_output=True, text=True, check=True)
     assert out.stdout.strip() == build.package_version(appinfo.VERSION, "deb")
+
+
+def test_release_notes_come_from_the_changelog(tmp_path: Path) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("# Changelog\n\n## 0.2.0\n\nNew.\n\n## 0.1.0\n\nFirst release.\n\n* a\n")
+    assert build.release_notes("0.1.0", changelog) == "First release.\n\n* a\n"
+    assert build.release_notes("0.2.0", changelog) == "New.\n"
+    with pytest.raises(build.BuildError):
+        build.release_notes("9.9.9", changelog)
+    # the real changelog has a section for every released version it mentions
+    assert build.release_notes("0.1.0").startswith("First release.")
