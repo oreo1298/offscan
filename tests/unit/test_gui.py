@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -348,6 +349,24 @@ def test_self_check_builds_every_page(xdg_home: Path) -> None:
     assert out.returncode == 0, out.stderr
     assert "self-check: OK" in out.stdout and f"{len(PAGES)} pages" in out.stdout
     assert not (xdg_home / "data").exists()           # it writes no history or settings
+
+
+def test_bridge_threads_end_quietly(qtbot) -> None:
+    """After close() no thread posts to Qt: the window may be gone by the time it finishes."""
+    delivered: list[Any] = []
+    quick = Bridge(lambda on_event: None)
+    quick.run_in_thread(lambda: time.sleep(0.2) or "quick", lambda r, e: delivered.append(r))
+    quick.close()
+    assert not quick.busy                               # close() let it end first
+    release = threading.Event()
+    slow = Bridge(lambda on_event: None)
+    slow.run_in_thread(lambda: release.wait(10) and "slow", lambda r, e: delivered.append(r))
+    slow.close(wait=0.1)
+    assert slow.busy                                    # the app then exits without Qt teardown
+    release.set()
+    qtbot.waitUntil(lambda: not slow.busy, timeout=5000)
+    QtWidgets.QApplication.processEvents()
+    assert delivered == []
 
 
 def test_tooltips_never_render_target_html(qtbot) -> None:

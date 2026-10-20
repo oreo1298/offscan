@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -11,6 +13,7 @@ from typing import TYPE_CHECKING
 from .. import appinfo, log
 
 if TYPE_CHECKING:
+    from .bridge import Bridge
     from .qt import QtWidgets
 
 
@@ -29,6 +32,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                                                   "WAYLAND_DISPLAY")):
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
     log.setup("gui", verbose=args.verbose, to_file=not args.self_check)
+    faulthandler.enable()            # a crash in Qt prints every thread's Python stack to stderr
     from ..history import History
     from ..settings import Settings
     from .bridge import Bridge
@@ -58,8 +62,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.no_connect:
         bridge.connect_helper(prefer_sudo=args.sudo)
     code = app.exec()
+    return _finish(bridge, int(code))
+
+
+def _finish(bridge: Bridge, code: int) -> int:
+    """Close the bridge; leave without tearing Qt down if one of its threads is still running.
+
+    Such a thread (a definitions update, say) still holds references to Qt
+    objects. If it dropped the last one after the application is destroyed,
+    the objects would be freed from the wrong thread and the process would
+    crash on exit. The thread cannot be stopped cleanly anyway.
+    """
     bridge.close()
-    return int(code)
+    if not bridge.busy:
+        return code
+    log.get("gui").warning("quitting while background work is still running")
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 def _self_check(app: QtWidgets.QApplication) -> int:
@@ -77,11 +98,10 @@ def _self_check(app: QtWidgets.QApplication) -> int:
         QtWidgets.QApplication.processEvents()
     pages = window.stack.count()
     window.close()
-    bridge.close()
     print(f"{appinfo.GUI_NAME} self-check: OK ({BINDING} {BINDING_VERSION}, "
           f"Qt {'.'.join(map(str, QT_VERSION))}, platform {app.platformName()}, {pages} pages, "
-          f"{'dark' if is_dark(app.palette()) else 'light'} palette)")
-    return 0
+          f"{'dark' if is_dark(app.palette()) else 'light'} palette)", flush=True)
+    return _finish(bridge, 0)
 
 
 if __name__ == "__main__":
