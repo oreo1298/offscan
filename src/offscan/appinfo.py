@@ -53,6 +53,9 @@ ENV_PREFIX = NAME.upper().replace("-", "_") + "_"
 
 USER_AGENT = f"{DISPLAY_NAME}/{VERSION} (+{HOMEPAGE})"
 
+# Prefix for our own signature/rule names (ASCII letters and digits only).
+SIGNATURE_PREFIX = "".join(c for c in DISPLAY_NAME if c.isascii() and c.isalnum()) or "Scanner"
+
 
 def env(name: str) -> str:
     """Return the full environment variable name for ``name``."""

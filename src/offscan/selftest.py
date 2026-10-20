@@ -97,3 +97,44 @@ def format_text(report: dict[str, Any]) -> str:
                                                   "vfat", "exfat", "fuse", "f2fs"}))
     lines.append(f"Running as root: {report['privileges']['root']}")
     return "\n".join(lines)
+
+
+def engines_check() -> dict[str, Any]:
+    """Run the EICAR test file through every installed engine (no network, no root)."""
+    import hashlib
+    import tempfile
+    from pathlib import Path
+
+    from .defs import layout, testset
+    from .scan import hashdb, yara_engine
+
+    results: dict[str, Any] = {}
+    with tempfile.TemporaryDirectory(prefix=f"{appinfo.NAME}-selftest-") as tmp:
+        base = Path(tmp)
+        testset.build_test_set(base / "set")
+        sample = base / "eicar.com"
+        sample.write_bytes(testset.eicar())
+        db = hashdb.HashDB(base / "set" / "hashes" / "malware.ofh")
+        found = db.lookup(hashlib.sha256(sample.read_bytes()).digest())
+        db.close()
+        results["hashes"] = {"ok": bool(found), "detail": ", ".join(found) or "not detected"}
+        engine = yara_engine.engine_name()
+        if engine is None:
+            results["yara"] = {"ok": False, "detail": "neither yara-x nor yara-python is installed"}
+        else:
+            yfile = layout.load_manifest(base / "set")["yara"]["file"]
+            scanner = yara_engine.Scanner(base / "set" / "yara" / yfile, engine)
+            matches = scanner.scan(sample.read_bytes(), str(sample))
+            version = yara_engine.engine_version(engine)
+            results["yara"] = {"ok": bool(matches), "engine": f"{engine} {version}",
+                               "detail": ", ".join(m.rule for m in matches) or "not detected"}
+        clamscan = tools.find("clamscan")
+        if clamscan is None:
+            results["clamav"] = {"ok": False, "detail": "clamscan is not installed"}
+        else:
+            proc = tools.run([clamscan, "--no-summary", "--infected",
+                              f"--database={base / 'set' / 'clamav'}", str(sample)],
+                             timeout=120, check=False)
+            results["clamav"] = {"ok": proc.returncode == 1, "version": tools.version("clamscan"),
+                                 "detail": (proc.stdout or proc.stderr).strip().split(": ", 1)[-1][:200]}
+    return results

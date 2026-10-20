@@ -32,10 +32,16 @@ def _cmd_version(args: argparse.Namespace) -> int:
 def _cmd_selftest(args: argparse.Namespace) -> int:
     from .. import selftest
     report = selftest.collect()
+    if args.engines:
+        report["engine_check"] = selftest.engines_check()
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(selftest.format_text(report))
+        for name, res in report.get("engine_check", {}).items():
+            print(f"EICAR via {name:8} {'OK  ' if res['ok'] else 'FAIL'} {res.get('detail', '')}")
+    if args.engines and not all(r["ok"] for r in report["engine_check"].values()):
+        return EXIT_ERROR
     return EXIT_OK
 
 
@@ -54,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("selftest", help="show available engines, drivers and tools")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--engines", action="store_true",
+                   help="also check that every engine detects the EICAR test file")
     p.set_defaults(func=_cmd_selftest)
 
     for register in _command_modules():
