@@ -64,6 +64,8 @@ def require(*tools: str) -> None:
 
 def require_fs(name: str) -> None:
     if not images.kernel_fs(name):
+        subprocess.run(["modprobe", "-q", name], env=images.ENV, check=False)
+    if not images.kernel_fs(name):
         pytest.skip(f"kernel lacks {name}")
 
 

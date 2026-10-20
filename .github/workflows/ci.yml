@@ -67,6 +67,13 @@ jobs:
           sudo apt-get install -y -q ntfs-3g xfsprogs btrfs-progs cryptsetup-bin lvm2 \
             dosfstools exfatprogs fdisk dislocker "linux-modules-extra-$(uname -r)" || \
           sudo apt-get install -y -q ntfs-3g xfsprogs btrfs-progs cryptsetup-bin lvm2 dosfstools exfatprogs fdisk
+      - name: Kernel modules
+        run: |
+          sudo modprobe -a loop dm_mod dm_crypt xfs btrfs fuse || true
+          sudo modprobe ntfs3 || true
+          grep -E 'xfs|btrfs|ntfs|fuse' /proc/filesystems || true
+          ls -la /dev/fuse /dev/mapper/control || true
+          which ntfs-3g mkntfs dislocker || true
       - name: BitLocker test images (from cryptsetup's test suite)
         run: |
           curl -fsSL -o bitlk.tar.xz \

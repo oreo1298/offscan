@@ -65,7 +65,7 @@ class VolumeManager:
     def __init__(self, store: StateStore | None = None):
         self.store = store or StateStore()
         self.state = State()
-        self.lock = threading.RLock()
+        self._lock = threading.RLock()
         self.probe_cache: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------ state
@@ -85,7 +85,7 @@ class VolumeManager:
 
     def stop(self) -> None:
         """Tear down everything not marked 'keep'."""
-        with self.lock:
+        with self._lock:
             owners = [layer.owner for layer in self.state.layers
                       if self._root_owner(layer.owner) not in self.state.keep]
             for owner in dict.fromkeys(reversed(owners)):
@@ -310,7 +310,7 @@ class VolumeManager:
     # ------------------------------------------------------------------ mount
 
     def mount(self, kname: str, keep: bool = False, owner: str | None = None) -> dict[str, Any]:
-        with self.lock:
+        with self._lock:
             dev, snap = self.resolve(kname)
             owner = owner or kname
             existing = self._mount_layer(owner)
@@ -341,8 +341,9 @@ class VolumeManager:
                     result = mounting.mount(loop, target, dev.fstype or "")
             except Exception as exc:
                 self.teardown(owner)
-                attempts = getattr(exc, "attempts", None)
-                raise VolumeError(f"could not mount {dev.path} read-only: {exc}", "failed",
+                attempts = getattr(exc, "attempts", None) or []
+                detail = (" (" + "; ".join(a[:200] for a in attempts) + ")") if attempts else ""
+                raise VolumeError(f"could not mount {dev.path} read-only: {exc}{detail}", "failed",
                                   {"attempts": attempts}) from exc
             layer.extra.update({"driver": result.driver, "options": result.options,
                                 "messages": result.messages})
@@ -363,7 +364,7 @@ class VolumeManager:
         return layer.target if layer else None
 
     def unmount(self, kname: str) -> None:
-        with self.lock:
+        with self._lock:
             if not self._mount_layer(kname):
                 raise VolumeError(f"{kname} is not mounted by this program", "not_found")
             self._teardown_layers(lambda layer: layer.owner == kname)
@@ -372,12 +373,12 @@ class VolumeManager:
 
     def keep(self, kname: str) -> None:
         """Keep ``kname`` (and what it needs) after this helper exits."""
-        with self.lock:
+        with self._lock:
             self.state.keep.add(self._root_owner(kname))
             self._save()
 
     def cleanup(self, include_kept: bool = False) -> None:
-        with self.lock:
+        with self._lock:
             owners = [layer.owner for layer in self.state.layers
                       if include_kept or self._root_owner(layer.owner) not in self.state.keep]
             for owner in dict.fromkeys(reversed(owners)):
@@ -389,7 +390,7 @@ class VolumeManager:
     # ------------------------------------------------------------ teardown
 
     def teardown(self, owner: str) -> None:
-        with self.lock:
+        with self._lock:
             owners = {owner} | {c for c in self._descendants(owner)}
             owners |= {f"probe:{o}" for o in owners}
             self._teardown_layers(lambda layer: layer.owner in owners)
@@ -454,7 +455,7 @@ class VolumeManager:
     # ---------------------------------------------------------------- unlock
 
     def unlock(self, kname: str, secret: str, secret_kind: str = "passphrase") -> dict[str, Any]:
-        with self.lock:
+        with self._lock:
             dev, snap = self.resolve(kname)
             role = self.role(dev)
             if role not in ("luks", "bitlocker"):
@@ -505,7 +506,7 @@ class VolumeManager:
         return {"volume": kname, "unlocked": child, "device": inner, "via": "dislocker"}
 
     def lock(self, kname: str) -> None:
-        with self.lock:
+        with self._lock:
             if not any(parent == kname for parent in self.state.parents.values()):
                 raise VolumeError(f"{kname} is not unlocked", "not_found")
             self.teardown(kname)
@@ -513,7 +514,7 @@ class VolumeManager:
     # ------------------------------------------------------------------ LVM
 
     def activate_lvm(self, kname: str) -> dict[str, Any]:
-        with self.lock:
+        with self._lock:
             dev, snap = self.resolve(kname)
             if self.role(dev) != "lvm_pv":
                 raise VolumeError("this volume is not an LVM physical volume", "not_permitted")
@@ -554,7 +555,7 @@ class VolumeManager:
 
     def probe(self, kname: str) -> dict[str, Any]:
         """Detect OS, hibernation and filesystem state using a temporary read-only mount."""
-        with self.lock:
+        with self._lock:
             dev, snap = self.resolve(kname)
             result: dict[str, Any] = {"os": None, "hibernation": None, "fs_state": None,
                                       "warnings": []}
