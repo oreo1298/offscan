@@ -120,6 +120,17 @@ def test_stage_layout(staged: dict) -> None:
         assert repr(appinfo.PYTHON_DIR) in text and repr(appinfo.VENDOR_DIR) in text
         assert f"from {module} import main" in text
         compile(text, launcher, "exec")
+    # The vendored packages come after the standard library and before site-packages.
+    probe = (dest / appinfo.HELPER_PATH.lstrip("/")).read_text().split("\nfrom ", 1)[0]
+    probe += "\nimport json; print(json.dumps(sys.path))\n"
+    out = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, check=True)
+    path = json.loads(out.stdout)
+    assert path[0] == appinfo.PYTHON_DIR
+    vendor = path.index(appinfo.VENDOR_DIR)
+    version = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+    stdlib = next(i for i, p in enumerate(path) if p.endswith(version))
+    assert stdlib < vendor
+    assert all(not p.endswith("-packages") for p in path[:vendor])
     sources = {p.relative_to(ROOT / "src").as_posix() for p in (ROOT / "src" / "offscan").rglob("*.py")}
     staged_sources = {p.removeprefix(appinfo.PYTHON_DIR + "/") for p in files if p.endswith(".py")
                       and p.startswith(appinfo.PYTHON_DIR)}
@@ -543,16 +554,72 @@ def test_data_removal_does_not_follow_links_out_of_home(tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / ".local" / "share").mkdir(parents=True)
     (home / ".local" / "share" / appinfo.NAME).symlink_to(outside)
-    layout = installer.Layout(tmp_path / "root", build.values())
     target = home / ".local" / "share" / appinfo.NAME / "definitions"
     with pytest.raises(installer.InstallError, match="refusing"):
-        installer._remove_data(target, home, layout)
+        installer._remove_data(target, home, as_owner=True)
     assert (outside / "definitions" / "important").exists()
     # a link to a directory is removed itself, never what it points to
     link = home / "linked"
     link.symlink_to(outside)
-    installer._remove_data(link, home, layout)
+    installer._remove_data(link, home, as_owner=True)
     assert not link.is_symlink() and (outside / "definitions" / "important").exists()
+
+
+def test_home_data_may_not_point_into_the_system_state(tmp_path: Path) -> None:
+    """A user linking ~/.local/share/<name> to /var/lib/<name> must not get root to delete there."""
+    state = tmp_path / "root" / appinfo.SYSTEM_STATE_DIR.lstrip("/")
+    (state / "definitions").mkdir(parents=True)
+    home = tmp_path / "home"
+    (home / ".local" / "share").mkdir(parents=True)
+    (home / ".local" / "share" / appinfo.NAME).symlink_to(state)
+    layout = installer.Layout(tmp_path / "root", build.values())
+    for item in installer.data_items(layout, home):
+        for path in item.present():
+            with pytest.raises(installer.InstallError):
+                installer._remove_data(path, item.base, as_owner=item.home)
+    assert (state / "definitions").is_dir()
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to drop to another user")
+def test_home_data_is_deleted_with_the_owners_rights() -> None:
+    import pwd
+    import tempfile
+    nobody = pwd.getpwnam("nobody")
+    base = Path(tempfile.mkdtemp(dir="/var/tmp"))      # pytest's tmp_path is root-only
+    os.chmod(base, 0o755)
+    try:
+        _owner_rights(base / "home", nobody)
+    finally:
+        shutil.rmtree(base)
+
+
+def _owner_rights(home: Path, nobody) -> None:
+    data = home / ".local" / "share" / appinfo.NAME / "definitions"
+    data.mkdir(parents=True)
+    (data / "mine").write_text("x")
+    for directory in (home, home / ".local", home / ".local" / "share", data.parent, data):
+        os.chown(directory, nobody.pw_uid, nobody.pw_gid)
+    os.chown(data / "mine", nobody.pw_uid, nobody.pw_gid)
+    rootowned = data / "rootowned"            # stands for something only root may delete
+    rootowned.mkdir()
+    (rootowned / "file").write_text("x")
+    with pytest.raises(installer.InstallError, match="could not delete"):
+        installer._remove_data(data, home, as_owner=True)
+    assert (rootowned / "file").exists()
+    rootowned.joinpath("file").unlink()
+    rootowned.rmdir()
+    installer._remove_data(data, home, as_owner=True)
+    assert not data.exists()
+
+
+def test_wheels_are_checked_on_a_private_copy(tmp_path: Path) -> None:
+    _pkg, entry = build.wheel_entries("x86_64")[0]
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / entry["file"]).write_bytes(b"x")
+    with pytest.raises(build.BuildError, match="does not match"):
+        build.find_wheels("x86_64", shared, copy_to=tmp_path / "private")
+    assert (tmp_path / "private" / entry["file"]).is_file()
 
 
 def test_existing_files_are_not_overwritten(tmp_path: Path, quick_stage: None) -> None:

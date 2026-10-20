@@ -3,6 +3,7 @@
 # The package ships Python sources only, so the same package works with every
 # Python 3 version the distributions use. Byte-compile them for this one; this
 # only makes start-up faster, so a failure is not an error.
+umask 022
 if command -v python3 >/dev/null 2>&1; then
     python3 -I -m compileall -q -j 0 --invalidation-mode checked-hash \
         "@PYTHON_DIR@" "@VENDOR_DIR@" >/dev/null 2>&1 || true

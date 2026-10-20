@@ -257,7 +257,8 @@ class DefinitionsPage(QtWidgets.QWidget):
         self.bridge.run_in_thread(lambda: bundle.export(Path(path), self.updater_factory()), done,
                                   "defs-export")
 
-    def import_bundle(self, trust: str | None = None, path: str | None = None) -> None:
+    def import_bundle(self, trust: str | None = None, path: str | None = None,
+                      allow_older: bool = False) -> None:
         if path is None:
             path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Import offline bundle",
                                                             os.path.expanduser("~"), BUNDLE_FILTER)
@@ -274,7 +275,13 @@ class DefinitionsPage(QtWidgets.QWidget):
                        f"The bundle is signed by a key this computer does not know yet:\n\n{fpr}\n\n"
                        "Compare it with the fingerprint shown on the computer that made the bundle. "
                        "Trust it?", "Trust"):
-                    self.import_bundle(trust=err.fingerprint, path=path)
+                    self.import_bundle(trust=err.fingerprint, path=path, allow_older=allow_older)
+                return
+            if isinstance(err, bundle.OlderBundle):
+                if ask(self, "Older definitions",
+                       f"{err}.\n\nImporting it replaces newer definitions with older ones. "
+                       "Do this only if you mean to go back.", "Import older bundle"):
+                    self.import_bundle(trust=trust, path=path, allow_older=True)
                 return
             if err is not None:
                 error(self, "Import failed", str(err))
@@ -283,7 +290,8 @@ class DefinitionsPage(QtWidgets.QWidget):
             self.changed.emit()
             self.reload()
         def work() -> dict[str, Any]:
-            return bundle.import_bundle(Path(path), self.updater_factory(), trust=trust)
+            return bundle.import_bundle(Path(path), self.updater_factory(), trust=trust,
+                                        allow_older=allow_older)
         self.bridge.run_in_thread(work, done, "defs-import")
 
     def own_fingerprint(self) -> str:

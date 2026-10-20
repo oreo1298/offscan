@@ -12,7 +12,17 @@ from typing import Any
 
 from ... import log, tools
 from .. import layout, net, verify
-from .base import DAY, HOUR, FetchContext, Source, SourceError, SourceInfo, Unchanged, write_material
+from .base import (
+    DAY,
+    HOUR,
+    FetchContext,
+    Source,
+    SourceError,
+    SourceInfo,
+    Unchanged,
+    load_material,
+    write_material,
+)
 
 logger = log.get("defs.clamav")
 MiB = 1 << 20
@@ -162,6 +172,11 @@ class _Sanesecurity(Source):
         base = self.base_url(SANESECURITY_MIRROR).rstrip("/") + "/"
         changed = False
         names = []
+        try:
+            before = load_material(ctx.previous).get("signed", {}) if ctx.previous else {}
+        except SourceError:
+            before = {}
+        signed: dict[str, float] = {}
         for name in self.files:
             ctx.check_cancel()
             ctx.progress(f"Sanesecurity: {name}")
@@ -169,11 +184,15 @@ class _Sanesecurity(Source):
                 data = ctx.download(base + name, name, max_size=64 * MiB, allow_http=True)
                 sig = ctx.download(base + name + ".sig", name + ".sig", max_size=64 * 1024,
                                    allow_http=True, conditional=False)
-                verify.gpg_verify(data, sig, sanesecurity_keyring(), SANESECURITY_FPR)
+                signature = verify.gpg_verify(data, sig, sanesecurity_keyring(), SANESECURITY_FPR,
+                                              not_before=before.get(name))
+                signed[name] = signature.timestamp
                 changed = True
             except Unchanged:
                 ctx.reuse(name)
                 ctx.reuse(name + ".sig")
+                if name in before:
+                    signed[name] = before[name]
             except net.DownloadError as exc:
                 if "HTTP 404" in str(exc):
                     logger.warning("Sanesecurity: %s is no longer published; skipping", name)
@@ -186,7 +205,8 @@ class _Sanesecurity(Source):
         for path in verify_files:
             verify.clamav_load_test(path)
         version = time.strftime("%Y-%m-%d %H:%M", time.gmtime(ctx.now))
-        return write_material(ctx.staging, {"clamav": names, "version": version, "verified": "gpg"})
+        return write_material(ctx.staging, {"clamav": names, "version": version, "verified": "gpg",
+                                            "signed": signed})
 
 
 class SanesecurityMalware(_Sanesecurity):

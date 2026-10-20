@@ -221,13 +221,15 @@ def test_broken_rule_file_does_not_break_the_set(env, server: FileServer) -> Non
     assert report["set"]["rules"] == 2 and report["set"]["yara_errors"] == 1
 
 
-def _gpg_key(tmp: Path) -> tuple[Path, str]:
+def _gpg_key(tmp: Path, created: str | None = None) -> tuple[Path, str]:
     home = tmp / "gnupg"
     home.mkdir(mode=0o700)
+    faked = ["--faked-system-time", created] if created else []
     def run(*a: str) -> subprocess.CompletedProcess:
         return subprocess.run(["gpg", "--homedir", str(home), "--batch", *a],
                               capture_output=True, check=True)
-    run("--passphrase", "", "--quick-gen-key", "Test Signer <t@example.org>", "ed25519", "sign", "1d")
+    run(*faked, "--passphrase", "", "--quick-gen-key", "Test Signer <t@example.org>", "ed25519", "sign",
+        "never")
     fpr = run("--with-colons", "--fingerprint").stdout.decode()
     fingerprint = next(line.split(":")[9] for line in fpr.splitlines() if line.startswith("fpr"))
     keyring = tmp / "keyring.gpg"
@@ -257,6 +259,35 @@ def test_sanesecurity_gpg_verification(env, server: FileServer, tmp_path: Path,
     report = up.update(force=True)
     assert report["sources"]["sanesecurity"]["result"] == "failed"
     assert "signature" in report["sources"]["sanesecurity"]["message"]
+
+
+@pytest.mark.skipif(subprocess.run(["which", "gpg"], capture_output=True).returncode != 0,
+                    reason="gpg missing")
+def test_sanesecurity_refuses_an_older_signature(env, server: FileServer, tmp_path: Path,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mirror (plain HTTP) must not be able to bring back an old, correctly signed file."""
+    keyring, fpr = _gpg_key(tmp_path, created="20200101T000000")
+    home = tmp_path / "gnupg"
+    monkeypatch.setattr(clamav_sources, "SANESECURITY_FPR", {fpr})
+    monkeypatch.setattr(clamav_sources, "sanesecurity_keyring", lambda: keyring)
+    monkeypatch.setattr(clamav_sources.SanesecurityMalware, "files", ("rogue.hdb",))
+
+    def signed(data: bytes, when: str | None) -> bytes:
+        (tmp_path / "f").write_bytes(data)
+        faked = ["--faked-system-time", when] if when else []
+        subprocess.run(["gpg", "--homedir", str(home), "--batch", "--yes", *faked, "--detach-sign", "-o",
+                        str(tmp_path / "f.sig"), str(tmp_path / "f")], check=True, capture_output=True)
+        return (tmp_path / "f.sig").read_bytes()
+    old = b"%s:68:Sanesecurity.Old\n" % hashlib.md5(b"x").hexdigest().encode()
+    new = b"%s:68:Sanesecurity.New\n" % hashlib.md5(b"y").hexdigest().encode()
+    old_sig, new_sig = signed(old, "20210101T000000"), signed(new, None)
+    server.files["/ss/rogue.hdb"], server.files["/ss/rogue.hdb.sig"] = new, new_sig
+    up = env(["sanesecurity"], {"sanesecurity": "/ss/"})
+    assert up.update()["sources"]["sanesecurity"]["result"] == "updated"
+    server.files["/ss/rogue.hdb"], server.files["/ss/rogue.hdb.sig"] = old, old_sig
+    report = up.update(force=True)
+    assert report["sources"]["sanesecurity"]["result"] == "failed"
+    assert "older than the copy already installed" in report["sources"]["sanesecurity"]["message"]
 
 
 def test_https_only_and_no_downgrade(server: FileServer, tmp_path: Path) -> None:
@@ -309,7 +340,9 @@ def test_bundle_roundtrip_trust_and_tamper(env, server: FileServer, tmp_path: Pa
         bundle.import_bundle(out, offline)
     info = bundle.inspect(out)
     assert info["fingerprint"] == exporter_fpr and info["trusted"] is False
-    imported = bundle.import_bundle(out, offline, trust=exporter_fpr[:32])
+    with pytest.raises(bundle.UntrustedKey):                 # a short prefix is not enough
+        bundle.import_bundle(out, offline, trust=exporter_fpr[:32])
+    imported = bundle.import_bundle(out, offline, trust=bundle.format_fingerprint(exporter_fpr))
     assert set(imported["sources"]) == {"lmd", "loldrivers"}
     active = store.active_set(offline.base)
     assert (active / "clamav" / "rfxn.hsb").exists()
@@ -321,6 +354,93 @@ def test_bundle_roundtrip_trust_and_tamper(env, server: FileServer, tmp_path: Pa
     bad.write_bytes(bytes(data))
     with pytest.raises(bundle.BundleError, match="checksum"):
         bundle.import_bundle(bad, offline)
+
+
+def _rebundle(src: Path, dst: Path, change) -> None:
+    """Re-sign a bundle (with this machine's key) after ``change(contents, manifest)``."""
+    import json
+    with tarfile.open(src) as tar:
+        manifest = json.loads(tar.extractfile("bundle.json").read())
+        contents = {m.name: tar.extractfile(m).read() for m in tar
+                    if m.isreg() and m.name.startswith("data/")}
+    change(contents, manifest)
+    manifest["files"] = {n: {"sha256": hashlib.sha256(d).hexdigest(), "size": len(d)}
+                         for n, d in contents.items()}
+    key = bundle._load_or_create_key()
+    blob = json.dumps(manifest, indent=1, sort_keys=True).encode()
+    with tarfile.open(dst, "w", format=tarfile.PAX_FORMAT) as tar:
+        bundle._add_bytes(tar, "bundle.json", blob)
+        bundle._add_bytes(tar, "bundle.sig", key.sign(blob))
+        for name, data in contents.items():
+            bundle._add_bytes(tar, name, data)
+
+
+def _material_change(source: str, edit):
+    import json
+
+    def change(contents: dict[str, bytes], _manifest: dict) -> None:
+        name = f"data/{source}/material.json"
+        material = json.loads(contents[name])
+        edit(material, contents)
+        contents[name] = json.dumps(material).encode()
+    return change
+
+
+@pytest.mark.parametrize(("source", "edit", "message"), [
+    ("loldrivers", lambda m, c: m["hashes"][0].update(file="/etc/hostname"), "unsafe file name"),
+    ("loldrivers", lambda m, c: m["hashes"][0].update(file="../../../../etc/hostname"), "unsafe file name"),
+    ("lmd", lambda m, c: m.update(yara=[{"file": "rfxn.hsb", "origin": "x"}]), "cannot carry yara"),
+    ("lmd", lambda m, c: (m["clamav"].append("evil.ign2"), c.update({"data/lmd/evil.ign2": b"Some.Sig\n"})),
+     "allow-list"),
+    ("lmd", lambda m, c: (m["clamav"].append("bytecode.cld"), c.update({"data/lmd/bytecode.cld": b"x"})),
+     "bytecode"),
+])
+def test_bundles_cannot_smuggle_material(env, server: FileServer, tmp_path: Path, source, edit,
+                                         message: str) -> None:
+    """Even a trusted signer cannot point a set at local files, or weaken the scan."""
+    _serve_lmd(server, "42")
+    _serve_loldrivers(server)
+    up = env(["lmd", "loldrivers"], {"lmd": "/lmd/", "loldrivers": "/lol/"})
+    up.update()
+    good = tmp_path / "good.tar"
+    bundle.export(good, up)
+    evil = tmp_path / "evil.tar"
+    _rebundle(good, evil, _material_change(source, edit))
+    before = up.load_state(source)
+    with pytest.raises(bundle.BundleError, match=message):
+        bundle.import_bundle(evil, up, allow_older=True)
+    assert up.load_state(source) == before
+
+
+def test_older_bundles_need_explicit_consent(env, server: FileServer, tmp_path: Path) -> None:
+    _serve_lmd(server, "42")
+    up = env(["lmd"], {"lmd": "/lmd/"})
+    up.update()
+    good = tmp_path / "good.tar"
+    bundle.export(good, up)
+    old = tmp_path / "old.tar"
+    _rebundle(good, old, lambda contents, manifest: manifest.update(created=manifest["created"] - 86400))
+    with pytest.raises(bundle.OlderBundle):
+        bundle.import_bundle(old, up)
+    assert bundle.import_bundle(old, up, allow_older=True)["sources"] == ["lmd"]
+
+
+def test_failed_import_restores_the_previous_definitions(env, server: FileServer, tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve_lmd(server, "42")
+    up = env(["lmd"], {"lmd": "/lmd/"})
+    up.update()
+    good = tmp_path / "good.tar"
+    bundle.export(good, up)
+    before = up.load_state("lmd")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("build failed")
+    monkeypatch.setattr(up, "build_and_activate", broken)
+    with pytest.raises(RuntimeError):
+        bundle.import_bundle(good, up)
+    assert up.load_state("lmd") == before
+    assert not list(up.source_dir("lmd").glob("*-import"))
 
 
 ALLOWED_NETWORK = {

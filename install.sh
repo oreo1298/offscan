@@ -31,7 +31,7 @@ find_python() {
     local candidate
     for candidate in python3 python3.14 python3.13 python3.12 python3.11; do
         if command -v "$candidate" >/dev/null 2>&1 &&
-           "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+           "$candidate" -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
             command -v "$candidate"
             return 0
         fi

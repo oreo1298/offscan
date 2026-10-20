@@ -302,6 +302,8 @@ def _remove_dirs(layout: Layout, dirs: list[str]) -> None:
 class DataItem:
     question: str
     paths: list[Path]
+    base: Path                  # every path must lie inside this directory
+    home: bool = False          # inside a user's home: deleted with that user's rights
 
     def present(self) -> list[Path]:
         return [p for p in self.paths if p.exists() or p.is_symlink()]
@@ -326,35 +328,81 @@ def data_items(layout: Layout, home: Path | None) -> list[DataItem]:
     count = sum(1 for p in quarantine.iterdir() if p.is_dir()) if quarantine.is_dir() else 0
     items = [
         DataItem(f"Delete the quarantine ({count} file(s); they cannot be restored to their drives "
-                 "afterwards)?", [quarantine]),
-        DataItem("Delete the log of changes made to drives?", [state / "changes.jsonl"]),
+                 "afterwards)?", [quarantine], state),
+        DataItem("Delete the log of changes made to drives?", [state / "changes.jsonl"], state),
     ]
     if home is not None:
         data = home / ".local" / "share" / name
         items += [
-            DataItem("Delete the downloaded definitions?", [data / "definitions"]),
+            DataItem("Delete the downloaded definitions?", [data / "definitions"], home, True),
             DataItem("Delete the scan history and reports?",
                      [data / "history.sqlite3", data / "history.sqlite3-wal",
-                      data / "history.sqlite3-shm", data / "reports"]),
+                      data / "history.sqlite3-shm", data / "reports"], home, True),
             DataItem("Delete the settings, saved keys, logs and cache?",
-                     [home / ".config" / name, home / ".local" / "state" / name, home / ".cache" / name]),
+                     [home / ".config" / name, home / ".local" / "state" / name, home / ".cache" / name],
+                     home, True),
         ]
     return items
 
 
-def _remove_data(path: Path, home: Path | None, layout: Layout) -> None:
-    """Delete one data file or directory, never anything outside its owner's area.
+def _check_inside(path: Path, base: Path) -> None:
+    """``path`` must be below ``base`` with no symbolic link on the way (the last part may be one)."""
+    try:
+        rel = path.relative_to(base)
+    except ValueError:
+        raise InstallError(f"refusing to delete {path}: it is not inside {base}") from None
+    current = base
+    for part in rel.parts[:-1]:
+        current = current / part
+        if current.is_symlink() or not current.is_dir():
+            raise InstallError(f"refusing to delete {path}: {current} is not a plain directory")
 
-    The parent is resolved first: a user could have replaced a directory in
-    their home with a symbolic link to somewhere only root may delete.
-    """
-    allowed = [layout.state_dir.resolve()] + ([home.resolve()] if home else [])
-    if not any(path.parent.resolve().is_relative_to(base) for base in allowed):
-        raise InstallError(f"refusing to delete {path}: it is not inside {', '.join(map(str, allowed))}")
+
+def _delete(path: Path) -> None:
     if path.is_symlink() or not path.is_dir():
         path.unlink()              # a link itself, never what it points to
     else:
         shutil.rmtree(path)        # does not follow symbolic links inside
+
+
+def _remove_data(path: Path, base: Path, as_owner: bool = False) -> None:
+    """Delete one data file or directory, never anything outside ``base``.
+
+    Data in a user's home is deleted by a child process with that user's
+    rights (``as_owner``), so swapping a directory for a symbolic link while
+    we work can only make it delete what the user could delete anyway.
+    """
+    _check_inside(path, base)
+    try:
+        owner = base.stat()
+    except OSError as exc:
+        raise InstallError(f"cannot read {base}: {exc}") from exc
+    if not as_owner or os.geteuid() != 0 or owner.st_uid == 0:
+        _delete(path)
+        return
+    result = subprocess.run([sys.executable, "-I", "-c", _DELETE_AS_OWNER, str(path), str(base)],
+                            user=owner.st_uid, group=owner.st_gid, extra_groups=[], cwd="/",
+                            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"}, capture_output=True,
+                            check=False)
+    if result.returncode != 0:
+        raise InstallError(f"could not delete {path}")
+
+
+# Run with the rights of the data's owner: the same checks and deletion as above.
+_DELETE_AS_OWNER = """
+import shutil, sys
+from pathlib import Path
+path, base = Path(sys.argv[1]), Path(sys.argv[2])
+current = base
+for part in path.relative_to(base).parts[:-1]:
+    current = current / part
+    if current.is_symlink() or not current.is_dir():
+        sys.exit(3)
+if path.is_symlink() or not path.is_dir():
+    path.unlink()
+else:
+    shutil.rmtree(path)
+"""
 
 
 def invoking_home(user: str | None) -> tuple[str, Path] | None:
@@ -436,11 +484,13 @@ class Installer:
             self.out("Leaving out YARA-X and regipy (--no-vendor): YARA rules then need the "
                      "distribution's yara-python, and Windows registry checks are skipped.")
             return None
+        # Wheels from elsewhere are copied into our private directory first, and
+        # checked and unpacked from that copy, so nobody can swap them in between.
         if self.args.wheels:
-            return build.find_wheels(arch, self.args.wheels)
+            return build.find_wheels(arch, self.args.wheels, copy_to=tmp)
         cache = build.ROOT / "build" / "wheels"
         try:
-            return build.find_wheels(arch, cache)
+            return build.find_wheels(arch, cache, copy_to=tmp)
         except build.BuildError:
             pass
         if self.args.offline:
@@ -559,7 +609,7 @@ class Installer:
                 remove = self.ask(f"{item.question} [{where}, {_size(present) / 1e6:.1f} MB]")
             if remove:
                 for path in present:
-                    _remove_data(path, home, self.layout)
+                    _remove_data(path, item.base, as_owner=item.home)
                 self.out(f"Deleted {where}")
             else:
                 self.out(f"Kept {where}")
@@ -637,6 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    os.umask(0o022)                     # installed files and byte-code: never group/world-writable
     args = build_parser().parse_args(argv)
     args.root = args.root.resolve()
     system = args.root == Path("/")

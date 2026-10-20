@@ -71,7 +71,13 @@ def _int(value: Any) -> int:
         return 0
 
 
-def _parse_node(node: dict[str, Any]) -> BlockDevice:
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _parse_node(node: dict[str, Any], depth: int = 0) -> BlockDevice:
+    if depth > 32:
+        raise ValueError("lsblk output nests too deeply")
     mountpoints = node.get("mountpoints")
     if mountpoints is None and "mountpoint" in node:     # util-linux < 2.37
         mountpoints = [node.get("mountpoint")]
@@ -97,16 +103,18 @@ def _parse_node(node: dict[str, Any]) -> BlockDevice:
         parttype=_str(node.get("parttype")),
         partlabel=_str(node.get("partlabel")),
         pkname=_str(node.get("pkname")),
-        mountpoints=[m for m in (mountpoints or []) if m],
+        mountpoints=[m for m in _list(mountpoints) if isinstance(m, str) and m],
     )
-    dev.children = [_parse_node(c) for c in node.get("children") or [] if isinstance(c, dict)]
+    dev.children = [_parse_node(c, depth + 1) for c in _list(node.get("children")) if isinstance(c, dict)]
     return dev
 
 
 def parse(text: str) -> list[BlockDevice]:
+    """Parse ``lsblk --json``; malformed output raises ValueError."""
     data = json.loads(text)
-    nodes = data.get("blockdevices") or []
-    return [_parse_node(n) for n in nodes if isinstance(n, dict)]
+    if not isinstance(data, dict):
+        raise ValueError("lsblk output is not an object")
+    return [_parse_node(n) for n in _list(data.get("blockdevices")) if isinstance(n, dict)]
 
 
 def list_devices(devices: list[str] | None = None) -> list[BlockDevice]:

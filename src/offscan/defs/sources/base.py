@@ -104,6 +104,7 @@ class FetchContext:
         try:
             dl = self.session.fetch(
                 url, self.staging, max_size=max_size, allow_http=allow_http, headers=headers,
+                cancel=self.cancel,
                 etag=etags.get(key) if conditional and self.previous else None,
                 last_modified=modified.get(key) if conditional and self.previous else None)
         except net.NotModified:
@@ -208,8 +209,47 @@ def write_material(staging: Path, material: dict[str, Any]) -> dict[str, Any]:
     return material
 
 
+def material_files(material: dict[str, Any]) -> list[str]:
+    """Every file a material.json refers to (relative to its version directory)."""
+    files = list(material.get("clamav", []))
+    for key in ("yara", "hashes", "authentihash"):
+        files += [item["file"] for item in material.get(key, [])]
+    if material.get("known_good"):
+        files.append(material["known_good"])
+    return files
+
+
+def material_path(version_dir: Path, name: Any) -> Path:
+    """``version_dir / name``, refusing anything that could lead outside it."""
+    safe = verify.safe_member_name(name) if isinstance(name, str) else None
+    if safe is None:
+        raise SourceError(f"material.json: unsafe file name {str(name)[:100]!r}")
+    path = version_dir
+    for part in safe.parts:
+        path = path / part
+        if path.is_symlink():
+            raise SourceError(f"material.json: {safe} goes through a symbolic link")
+    return path
+
+
 def load_material(version_dir: Path) -> dict[str, Any]:
-    return json.loads((version_dir / "material.json").read_text(encoding="utf-8"))
+    """Read and check a version directory's material.json.
+
+    It names the files the set is built from. They must all be plain files
+    inside the version directory, whatever wrote the material (a source, or
+    an imported bundle).
+    """
+    try:
+        material = json.loads((version_dir / "material.json").read_text(encoding="utf-8"))
+        if not isinstance(material, dict):
+            raise TypeError("not an object")
+        for name in material_files(material):
+            path = material_path(version_dir, name)
+            if not path.is_file():
+                raise SourceError(f"material.json: {name} is missing")
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise SourceError(f"material.json is malformed: {exc}") from exc
+    return material
 
 
 def validate_clamav_files(files: list[Path]) -> None:

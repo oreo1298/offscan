@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import zipfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .. import tools
@@ -56,8 +57,19 @@ def expect_sha256(path: Path, expected: str) -> None:
 
 # -- GnuPG -------------------------------------------------------------------
 
-def gpg_verify(data: Path, signature: Path, keyring: Path, fingerprints: set[str]) -> str:
-    """Verify a detached signature with ``gpgv`` against a pinned key; returns the fingerprint."""
+@dataclass(frozen=True)
+class Signature:
+    fingerprint: str        # of the primary key
+    timestamp: float        # when the signature was made
+
+
+def gpg_verify(data: Path, signature: Path, keyring: Path, fingerprints: set[str],
+               not_before: float | None = None) -> Signature:
+    """Verify a detached signature with ``gpgv`` against a pinned key.
+
+    ``not_before`` refuses a valid signature older than that time: a mirror
+    must not be able to serve an old (correctly signed) file again.
+    """
     gpgv = tools.find("gpgv") or tools.find("gpgv2")
     if gpgv is None:
         raise VerificationError("gpgv (GnuPG) is required to verify signatures but is not installed")
@@ -72,7 +84,11 @@ def gpg_verify(data: Path, signature: Path, keyring: Path, fingerprints: set[str
         signer = fields[2].upper()
         primary = fields[-1].upper() if len(fields) >= 12 else signer
         if signer in fingerprints or primary in fingerprints:
-            return primary
+            stamp = float(fields[4]) if len(fields) > 4 and fields[4].isdigit() else 0.0
+            if not_before is not None and stamp + 60 < not_before:
+                raise VerificationError(f"{data.name}: the signature is older than the copy already "
+                                        "installed (an outdated mirror, or a replay)")
+            return Signature(primary, stamp)
     raise VerificationError("signed by an unexpected key")
 
 
@@ -208,11 +224,11 @@ def sanity_check_clamav_text(path: Path, min_lines: int = 1) -> int:
 
 def clamav_load_test(path: Path) -> None:
     """Load one database file with clamscan (one bad file would abort the whole set)."""
+    if path.suffix in _TEXT_EXT:
+        sanity_check_clamav_text(path, 0 if path.suffix in (".ign", ".ign2", ".fp", ".sfp") else 1)
     clamscan = tools.find("clamscan")
     if clamscan is None:
         return                       # validated structurally only
-    if path.suffix in _TEXT_EXT:
-        sanity_check_clamav_text(path, 0 if path.suffix in (".ign", ".ign2", ".fp", ".sfp") else 1)
     with tempfile.TemporaryDirectory(prefix="clamtest-") as tmp:
         sample = Path(tmp) / "sample.txt"
         sample.write_bytes(b"offline definition load test\n" + eicar()[:10])

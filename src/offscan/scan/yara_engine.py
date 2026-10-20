@@ -88,6 +88,8 @@ def _yx_compiler(yara_x: Any) -> Any:
         compiler = yara_x.Compiler(relaxed_re_syntax=True)
     except TypeError:
         compiler = yara_x.Compiler()
+    # Rules come from public feeds: they may not read local files.
+    compiler.enable_includes(False)
     for ident in EXTERNALS:
         compiler.define_global(ident, "")
     for module in ("magic", "cuckoo", "androguard"):
@@ -154,14 +156,14 @@ def _compile_yara(sources: list[tuple[str, str, str]], output: Path) -> CompileR
     good: dict[str, str] = {}
     for namespace, origin, text in sources:
         try:
-            yara.compile(source=text, externals=externals)
+            yara.compile(source=text, externals=externals, includes=False)
         except yara.Error as exc:
             result.skipped_files.append(origin)
             result.errors.append(f"{origin}: {str(exc)[:300]}")
             continue
         key = f"{namespace}:{len(good)}"
         good[key] = text
-    rules = yara.compile(sources=good, externals=externals)
+    rules = yara.compile(sources=good, externals=externals, includes=False)
     tmp = output.with_suffix(output.suffix + ".tmp")
     rules.save(str(tmp))
     os.replace(tmp, output)

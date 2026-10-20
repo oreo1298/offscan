@@ -127,7 +127,8 @@ def _dpkg(args: dict[str, Any], fd: int, out: _Out) -> None:
         if entry["kind"] == "diversions":
             lines = data.decode("utf-8", "surrogateescape").split("\n")
             for i in range(0, len(lines) - 2, 3):
-                diversions[lines[i]] = (lines[i + 1], lines[i + 2])
+                if lines[i].startswith("/") and lines[i + 1].startswith("/"):
+                    diversions[lines[i]] = (lines[i + 1], lines[i + 2])
         elif entry["kind"] == "status":
             package, installed, in_conf = "", False, False
             for line in data.decode("utf-8", "surrogateescape").split("\n"):
@@ -177,12 +178,16 @@ def _dpkg(args: dict[str, Any], fd: int, out: _Out) -> None:
         out.errors.append("package database too large: only part of it was read")
 
 
-_ESCAPE = re.compile(r"\\([0-7]{3})")
+_ESCAPE = re.compile(r"\\([0-3][0-7]{2})")         # one byte, \000 to \377
 
 
 def _mtree_path(raw: str) -> str:
+    """Undo mtree's octal escapes; the result is the UTF-8 (or surrogate-escaped) path."""
     data = _ESCAPE.sub(lambda m: chr(int(m.group(1), 8)), raw)
-    return data.encode("latin-1", "surrogateescape").decode("utf-8", "surrogateescape")
+    try:
+        return data.encode("latin-1", "surrogateescape").decode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:              # not from a latin-1 decoded file; keep it as it is
+        return data
 
 
 def _gunzip(data: bytes, limit: int = 64 << 20) -> bytes:
@@ -200,44 +205,48 @@ def _pacman(args: dict[str, Any], fd: int, out: _Out) -> None:
     for entry, data in filepack.entries(fd, args["index"]):
         by_pkg.setdefault(entry.get("package", "?"), {})[entry["kind"]] = data
     for dirname, parts in sorted(by_pkg.items()):
-        desc = parts.get("desc", b"").decode("utf-8", "replace").split("\n")
-        name = desc[desc.index("%NAME%") + 1] if "%NAME%" in desc else dirname
-        idx = out.package(name)
-        backup: set[str] = set()
-        section = ""
-        for line in parts.get("files", b"").decode("utf-8", "surrogateescape").split("\n"):
-            if line.startswith("%") and line.endswith("%"):
-                section = line
-            elif line and section == "%FILES%":
-                out.owned.append("/" + line.rstrip("/"))
-            elif line and section == "%BACKUP%":
-                backup.add("/" + line.split("\t", 1)[0])
+        # One damaged (or crafted) package entry must not stop the others being checked.
         try:
-            mtree = _gunzip(parts.get("mtree", b"")).decode("latin-1")
-        except (ValueError, OSError, EOFError, zlib.error) as exc:
-            out.errors.append(f"{dirname}: mtree: {exc}")
+            _pacman_package(dirname, parts, out)
+        except (ValueError, IndexError, KeyError, UnicodeError, OSError, EOFError, zlib.error) as exc:
+            out.errors.append(f"{dirname}: {type(exc).__name__}: {exc}"[:300])
+
+
+def _pacman_package(dirname: str, parts: dict[str, bytes], out: _Out) -> None:
+    desc = parts.get("desc", b"").decode("utf-8", "replace").split("\n")
+    name = desc[desc.index("%NAME%") + 1] if "%NAME%" in desc[:-1] else dirname
+    idx = out.package(name)
+    backup: set[str] = set()
+    section = ""
+    for line in parts.get("files", b"").decode("utf-8", "surrogateescape").split("\n"):
+        if line.startswith("%") and line.endswith("%"):
+            section = line
+        elif line and section == "%FILES%":
+            out.owned.append("/" + line.rstrip("/"))
+        elif line and section == "%BACKUP%":
+            backup.add("/" + line.split("\t", 1)[0])
+    mtree = _gunzip(parts.get("mtree", b"")).decode("latin-1")
+    defaults: dict[str, str] = {}
+    for line in mtree.split("\n"):
+        words = line.split()
+        if not words or words[0].startswith("#"):
             continue
-        defaults: dict[str, str] = {}
-        for line in mtree.split("\n"):
-            if not line or line.startswith("#"):
-                continue
-            words = line.split()
-            if words[0] == "/set":
-                defaults.update(w.split("=", 1) for w in words[1:] if "=" in w)
-                continue
-            if words[0] == "/unset" or not words[0].startswith("./") or words[0].startswith("./."):
-                continue
-            attrs = dict(defaults)
-            attrs.update(w.split("=", 1) for w in words[1:] if "=" in w)
-            if attrs.get("type", "file") != "file":
-                continue
-            path = "/" + _mtree_path(words[0][2:])
-            digest = attrs.get("sha256digest") or attrs.get("md5digest")
-            if not digest:
-                continue
-            algo = "sha256" if "sha256digest" in attrs else "md5"
-            size = int(attrs["size"]) if attrs.get("size", "").isdigit() else -1
-            out.files.append([path, idx, algo, digest, "c" if path in backup else "", size])
+        if words[0] == "/set":
+            defaults.update(w.split("=", 1) for w in words[1:] if "=" in w)
+            continue
+        if words[0] == "/unset" or not words[0].startswith("./") or words[0].startswith("./."):
+            continue
+        attrs = dict(defaults)
+        attrs.update(w.split("=", 1) for w in words[1:] if "=" in w)
+        if attrs.get("type", "file") != "file":
+            continue
+        path = "/" + _mtree_path(words[0][2:])
+        digest = attrs.get("sha256digest") or attrs.get("md5digest")
+        if not digest:
+            continue
+        algo = "sha256" if "sha256digest" in attrs else "md5"
+        size = int(attrs["size"]) if attrs.get("size", "").isdigit() else -1
+        out.files.append([path, idx, algo, digest, "c" if path in backup else "", size])
 
 
 # -- rpm ----------------------------------------------------------------------
@@ -317,11 +326,11 @@ def _rpm_package(header: dict[int, Any], out: _Out) -> None:
 
 def iter_ndb(data: bytes) -> Iterable[bytes]:
     """Header blobs of an rpm ndb ``Packages.db``."""
-    if data[:4] != b"RpmP":
+    if data[:4] != b"RpmP" or len(data) < 32:
         raise ValueError("not an rpm ndb database")
     slot_pages = struct.unpack("<I", data[12:16])[0]
     end = min(len(data), max(1, slot_pages) * 4096)
-    for off in range(32, end, 16):
+    for off in range(32, end - 15, 16):
         magic, pkgidx, blkoff, blkcnt = struct.unpack("<4sIII", data[off:off + 16])
         if magic != b"Slot" or pkgidx == 0:
             continue

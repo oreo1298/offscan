@@ -21,7 +21,9 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
       - name: Install nfpm
         run: |
           curl -fsSLo /tmp/nfpm.tar.gz \
@@ -38,12 +40,35 @@ jobs:
           appstreamcli validate --no-net --explain /tmp/stage/usr/share/metainfo/*.metainfo.xml
       - name: Build packages
         run: tests/packaging/run-containers.sh build
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5
         with:
           name: dist
           path: dist/
           if-no-files-found: error
           include-hidden-files: true      # dist/arch/.SRCINFO
+      - name: Release files (x86_64 and aarch64)
+        run: |
+          version=$(python3 packaging/build.py version pep440)
+          tarball=$(ls dist/*.tar.gz)
+          name=$(basename "$tarball" "-$version.tar.gz")
+          mkdir -p release aur
+          python3 packaging/build.py fetch --arch aarch64 --cache dist/wheels-aarch64
+          python3 packaging/build.py packages --arch aarch64 --wheels dist/wheels-aarch64 --offline \
+            --out release
+          cp dist/*.deb dist/*.rpm "$tarball" release/
+          # The AUR fetches the tarball from the release itself.
+          python3 packaging/build.py pkgbuild --tarball "$tarball" --out aur \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$version/$(basename "$tarball")"
+          tar -czf "release/$name-$version-aur.tar.gz" -C aur PKGBUILD .SRCINFO "$name.install"
+          (cd release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          python3 packaging/build.py notes > release-notes.md
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5
+        with:
+          name: release
+          path: |
+            release/
+            release-notes.md
+          if-no-files-found: error
 
   install:
     needs: build
@@ -63,10 +88,36 @@ jobs:
         mode: [package, script]
     name: ${{ matrix.mode }} on ${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
         with:
           name: dist
           path: dist
       - name: Install, update and remove
         run: tests/packaging/run-containers.sh run "${{ matrix.image }}" "${{ matrix.mode }}"
+
+  release:
+    # Tags only, and only after every install test passed.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, install]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        with:
+          name: release
+          path: out
+      - name: The tag must match the version in appinfo
+        run: test "v$(python3 packaging/build.py version pep440)" = "$GITHUB_REF_NAME"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file out/release-notes.md out/release/*

@@ -287,13 +287,14 @@ class NSRL(Source):
         sha1_text = ctx.session.fetch_text(f"{base}/rds_{release}/{name}.sha", max_size=4096)
         import hashlib
         expected = re.search(r"\b[0-9a-fA-F]{40}\b", sha1_text)
-        if expected:
-            h = hashlib.sha1(usedforsecurity=False)
-            with open(archive, "rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(chunk)
-            if h.hexdigest().lower() != expected.group(0).lower():
-                raise SourceError("NSRL archive checksum mismatch")
+        if not expected:
+            raise SourceError("NSRL: the checksum file holds no SHA-1")
+        h = hashlib.sha1(usedforsecurity=False)
+        with open(archive, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest().lower() != expected.group(0).lower():
+            raise SourceError("NSRL archive checksum mismatch")
         dbs = verify.extract_zip(archive, ctx.staging / "x", lambda r: r.suffix == ".db",
                                  max_file=1 << 40, max_total=1 << 40, flatten=True)
         archive.unlink()

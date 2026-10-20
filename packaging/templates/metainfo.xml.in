@@ -30,11 +30,11 @@
   <screenshots>
     <screenshot type="default">
       <caption>Choosing the drives to scan</caption>
-      <image>https://raw.githubusercontent.com/oreo1298/offscan/main/docs/screenshots/drives-light.png</image>
+      <image>${SCREENSHOT_BASE}/drives-light.png</image>
     </screenshot>
     <screenshot>
       <caption>Results with persistence findings</caption>
-      <image>https://raw.githubusercontent.com/oreo1298/offscan/main/docs/screenshots/results-light.png</image>
+      <image>${SCREENSHOT_BASE}/results-light.png</image>
     </screenshot>
   </screenshots>
   <provides>

@@ -30,7 +30,15 @@ from ..scan import hashdb
 from ..settings import Settings
 from . import build, layout, net, store, testset, verify
 from .sources import Source, all_sources
-from .sources.base import FetchContext, SourceError, Unchanged, iter_digest_file, load_material, read_digests
+from .sources.base import (
+    FetchContext,
+    SourceError,
+    Unchanged,
+    iter_digest_file,
+    load_material,
+    material_path,
+    read_digests,
+)
 
 logger = log.get("defs.updater")
 Progress = Callable[[str, str], None]          # (source id, message)
@@ -189,6 +197,12 @@ class Updater:
             self.save_state(sid, state)
             logger.warning("%s: %s", sid, log.redact(str(exc)))
             return {"result": "failed", "message": log.redact(str(exc))}
+        except Exception as exc:                # a broken feed must not stop the other sources
+            message = log.redact(f"{type(exc).__name__}: {exc}")[:500]
+            state.update({"last_check": now, "error": message})
+            self.save_state(sid, state)
+            logger.exception("%s: unexpected error", sid)
+            return {"result": "failed", "message": message}
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -218,7 +232,13 @@ class Updater:
             vdir = self.current_dir(source.id, state)
             if vdir is None:
                 continue
-            material = load_material(vdir)
+            try:
+                material = load_material(vdir)
+            except SourceError as exc:          # leave this source out rather than fail the set
+                logger.error("%s: %s", source.id, exc)
+                state["error"] = str(exc)[:500]
+                self.save_state(source.id, state)
+                continue
             source_dirs[source.id] = vdir.name
             info = source.info
             sources_info[source.id] = {
@@ -227,19 +247,20 @@ class Updater:
                 "license_url": info.license_url, "verified": state.get("verified")}
             for name in material.get("clamav", []):
                 target = name if name not in clamav_files else f"{source.id}-{name}"
-                clamav_files[target] = vdir / name
-            if material.get("clamav_official"):
+                clamav_files[target] = material_path(vdir, name)
+            if material.get("clamav_official") and source.id == "clamav":
                 clamav_official = material["clamav_official"]
             for item in material.get("yara", []):
-                text = (vdir / item["file"]).read_text(encoding="utf-8", errors="replace")
+                text = material_path(vdir, item["file"]).read_text(encoding="utf-8", errors="replace")
                 yara_sources.append((source.id.replace("-", "_"), f"{source.id}/{item['origin']}", text))
                 yara_ns[source.id.replace("-", "_")] = source.id
             for item in material.get("hashes", []):
-                hash_lists[item["id"]] = (item["meta"], read_digests(vdir / item["file"]))
+                hash_lists[item["id"]] = (item["meta"], read_digests(material_path(vdir, item["file"])))
             for item in material.get("authentihash", []):
-                authentihash_lists[item["id"]] = (item["meta"], read_digests(vdir / item["file"]))
+                authentihash_lists[item["id"]] = (item["meta"],
+                                                  read_digests(material_path(vdir, item["file"])))
             if material.get("known_good"):
-                known_good = iter_digest_file(vdir / material["known_good"])
+                known_good = iter_digest_file(material_path(vdir, material["known_good"]))
         try:
             manifest = build.build_set(
                 out, set_id=out.name, sources=sources_info, clamav_files=clamav_files,

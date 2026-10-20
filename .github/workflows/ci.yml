@@ -12,11 +12,13 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
-      - run: pip install ruff
+      - run: pip install ruff==0.16.9
       - run: ruff check src tests tools packaging
       - run: shellcheck install.sh tests/packaging/*.sh
 
@@ -27,8 +29,10 @@ jobs:
       matrix:
         python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: ${{ matrix.python }}
       - name: Qt runtime libraries; rpm (real sqlite/ndb rpmdb fixtures)
@@ -44,7 +48,9 @@ jobs:
     # Ubuntu 24.04 / Mint 22 path: distro Python 3.12 + distro PyQt6 (Qt 6.4).
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
       - run: |
           sudo apt-get update -q
           sudo apt-get install -y -q python3-pyqt6 python3-pytest python3-pytestqt python3-yara \
@@ -62,8 +68,10 @@ jobs:
       BITLK_COMMIT: 102e91cb0fee849bb86fb1ec4d6ea218e45563cd
       BITLK_SHA256: 68bf5669f777668112d497234ebe2166b5feaf0e33b206b095b917f82937bd30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
       - name: Filesystem and crypto tools

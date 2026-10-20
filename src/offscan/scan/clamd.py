@@ -70,6 +70,9 @@ def write_config(runtime: Path, limits: Limits, threads: int, detect_pua: bool =
         "ScanHTML yes",
         "ScanMail yes",
         "Bytecode yes",
+        # Runtime safety checks for every bytecode signature, not just unsigned ones: a
+        # .cld file from an offline bundle is not verified by ClamAV's own signature.
+        "BytecodeSecurity Paranoid",
         f"DetectPUA {'yes' if detect_pua else 'no'}",
         "HeuristicAlerts yes",
     ]

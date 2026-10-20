@@ -31,7 +31,7 @@ from typing import Any
 from .. import appinfo, log, paths
 from ..settings import Settings
 from . import layout, verify
-from .sources.base import load_material
+from .sources.base import SourceError, load_material, material_path
 from .updater import Updater
 
 logger = log.get("defs.bundle")
@@ -53,6 +53,24 @@ class UntrustedKey(BundleError):
     def __init__(self, fingerprint: str):
         super().__init__(f"the bundle was signed by an untrusted key {format_fingerprint(fingerprint)}")
         self.fingerprint = fingerprint
+
+
+class OlderBundle(BundleError):
+    """The bundle would replace newer definitions (an old USB stick, or a replay)."""
+
+    def __init__(self, sources: list[str]):
+        super().__init__("the bundle is older than the definitions already installed for "
+                         f"{', '.join(sources)}; import it anyway only if you mean to go back")
+        self.sources = sources
+
+
+# Kinds of material each kind of source may carry in a bundle.
+MATERIAL_KEYS = {"clamav": {"clamav", "clamav_official"}, "yara": {"yara"},
+                 "hashes": {"hashes", "authentihash"}, "known_good": {"known_good"}}
+# Allow-list files switch other signatures off; only these sources publish them.
+ALLOWLIST_SUFFIXES = (".ign", ".ign2", ".fp", ".sfp")
+ALLOWLIST_SOURCES = {"sanesecurity", "sanesecurity-email", "securiteinfo"}
+MIN_TRUST_PREFIX = 40           # hex digits; what format_fingerprint shows
 
 
 def _crypto():
@@ -251,23 +269,33 @@ def _verify_signature(raw_public: bytes, blob: bytes, sig: bytes) -> None:
         raise BundleError("the bundle signature is invalid (file corrupted or tampered with)") from exc
 
 
-def import_bundle(path: Path, updater: Updater | None = None, trust: str | None = None) -> dict[str, Any]:
+def import_bundle(path: Path, updater: Updater | None = None, trust: str | None = None,
+                  allow_older: bool = False) -> dict[str, Any]:
     updater = updater or Updater()
     manifest, blob, sig = read_header(path)
     raw = base64.b64decode(manifest["public_key"])
     fpr = fingerprint_of(raw)
     _verify_signature(raw, blob, sig)
     if not _is_trusted(fpr):
-        if trust and trust.replace(" ", "").lower() == fpr[:len(trust.replace(" ", ""))].lower() \
-                and len(trust.replace(" ", "")) >= 16:
+        given = (trust or "").replace(" ", "").lower()
+        if len(given) >= MIN_TRUST_PREFIX and fpr.lower().startswith(given):
             trust_key(fpr, "imported bundle")
         else:
             raise UntrustedKey(fpr)
+    created = manifest.get("created")
+    if not isinstance(created, (int, float)):
+        raise BundleError("the bundle has no creation time")
     files: dict[str, Any] = manifest.get("files", {})
     known = {s.id: s for s in updater.sources}
     stamp = int(time.time())
     staged: dict[str, Path] = {}
+    updater._acquire()                  # no update may change the sources while we replace them
     try:
+        if not allow_older:
+            older = [sid for sid in manifest.get("sources", {}) if sid in known
+                     and float(updater.load_state(sid).get("updated") or 0) > created + 60]
+            if older:
+                raise OlderBundle(sorted(older))
         with tarfile.open(path, "r:") as tar:
             for member in tar:
                 if member.name in ("bundle.json", "bundle.sig"):
@@ -307,40 +335,65 @@ def import_bundle(path: Path, updater: Updater | None = None, trust: str | None 
         if missing:
             raise BundleError(f"bundle is incomplete ({len(missing)} files missing)")
         for sid, sdir in staged.items():
-            _reverify(sid, sdir)
+            _reverify(sid, known[sid].info.kind, sdir)
+        # Switch the sources over, and back again if the new set cannot be built.
+        previous: dict[str, dict[str, Any]] = {}
+        moved: list[Path] = []
         installed = []
-        for sid, sdir in staged.items():
-            version_dir = updater.source_dir(sid) / f"v{stamp}-import"
-            os.replace(sdir, version_dir)
-            state = updater.load_state(sid)
-            material = load_material(version_dir)
-            version = manifest["sources"].get(sid, {}).get("version") or material.get("version")
-            state.update({"version": version,
-                          "dir": version_dir.name, "updated": manifest.get("created"),
-                          "imported": time.time(), "error": None, "verified": f"bundle {fpr[:16]}",
-                          "size": sum(f.stat().st_size for f in version_dir.rglob("*") if f.is_file())})
-            updater.save_state(sid, state)
-            installed.append(sid)
-        updater._acquire()
         try:
+            for sid, sdir in staged.items():
+                version_dir = updater.source_dir(sid) / f"v{stamp}-import"
+                os.replace(sdir, version_dir)
+                moved.append(version_dir)
+                previous[sid] = updater.load_state(sid)
+                state = json.loads(json.dumps(previous[sid]))
+                material = load_material(version_dir)
+                version = manifest["sources"].get(sid, {}).get("version") or material.get("version")
+                state.update({"version": version, "dir": version_dir.name, "updated": created,
+                              "imported": time.time(), "error": None, "verified": f"bundle {fpr[:16]}",
+                              "size": sum(f.stat().st_size for f in version_dir.rglob("*") if f.is_file())})
+                updater.save_state(sid, state)
+                installed.append(sid)
             set_info = updater.build_and_activate()
-            updater.gc()
-        finally:
-            updater._release()
+        except BaseException:
+            for sid, state in previous.items():
+                updater.save_state(sid, state)
+            for version_dir in moved:
+                shutil.rmtree(version_dir, ignore_errors=True)
+            raise
+        updater.gc()
     finally:
+        updater._release()
         for sdir in staged.values():
             shutil.rmtree(sdir, ignore_errors=True)
     return {"fingerprint": fpr, "sources": installed, "set": set_info}
 
 
-def _reverify(sid: str, sdir: Path) -> None:
-    """Re-check upstream integrity where it exists; validate structure everywhere."""
-    material = json.loads((sdir / "material.json").read_text(encoding="utf-8"))
+def _reverify(sid: str, kind: str, sdir: Path) -> None:
+    """Re-check upstream integrity where it exists; validate structure everywhere.
+
+    The signer is trusted, but a bundle still only carries the kind of
+    material its source produces, and nothing that could weaken the scan:
+    no allow-lists from sources that do not publish any, and no ClamAV
+    bytecode except in signed .cvd files.
+    """
+    try:
+        material = load_material(sdir)
+    except SourceError as exc:
+        raise BundleError(f"{sid}: {exc}") from exc
+    allowed = MATERIAL_KEYS.get(kind, set())
+    for key in ("clamav", "clamav_official", "yara", "hashes", "authentihash", "known_good"):
+        if material.get(key) and key not in allowed:
+            raise BundleError(f"{sid}: a {kind} source cannot carry {key} material")
+    if material.get("clamav_official") and sid != "clamav":
+        raise BundleError(f"{sid}: only the ClamAV source carries the official database")
     from .sources.clamav import SANESECURITY_FPR, sanesecurity_keyring
     for name in material.get("clamav", []):
-        path = sdir / name
-        if not path.exists():
-            raise BundleError(f"{sid}: {name} is missing")
+        path = material_path(sdir, name)
+        if path.suffix in ALLOWLIST_SUFFIXES and sid not in ALLOWLIST_SOURCES:
+            raise BundleError(f"{sid}: {name} is an allow-list, which this source never publishes")
+        if (path.name.startswith("bytecode.") or path.suffix == ".cbc") and path.suffix != ".cvd":
+            raise BundleError(f"{sid}: {name}: ClamAV bytecode is only accepted in signed .cvd files")
         sig = path.with_name(path.name + ".sig")
         if sid.startswith("sanesecurity"):
             if not sig.exists():
@@ -351,11 +404,11 @@ def _reverify(sid: str, sdir: Path) -> None:
         else:
             verify.clamav_load_test(path)
     for item in material.get("hashes", []) + material.get("authentihash", []):
-        if (sdir / item["file"]).stat().st_size % 32:
+        if material_path(sdir, item["file"]).stat().st_size % 32:
             raise BundleError(f"{sid}: corrupt hash list {item['file']}")
-    if material.get("known_good") and (sdir / material["known_good"]).stat().st_size % 32:
+    if material.get("known_good") and material_path(sdir, material["known_good"]).stat().st_size % 32:
         raise BundleError(f"{sid}: corrupt known-good list")
 
 
-__all__ = ["BundleError", "Settings", "UntrustedKey", "export", "format_fingerprint", "import_bundle",
-           "inspect", "own_fingerprint", "trust_key", "trusted_keys"]
+__all__ = ["BundleError", "OlderBundle", "Settings", "UntrustedKey", "export", "format_fingerprint",
+           "import_bundle", "inspect", "own_fingerprint", "trust_key", "trusted_keys"]

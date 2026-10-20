@@ -67,6 +67,8 @@ def register(sub: argparse._SubParsersAction) -> None:
                    help="trust the bundle's signing key (compare with 'defs fingerprint' on the "
                         "exporting machine)")
     q.add_argument("--yes", action="store_true", help="trust an unknown key without asking")
+    q.add_argument("--allow-older", action="store_true",
+                   help="import even if the bundle is older than the installed definitions")
     q.set_defaults(func=cmd_import)
 
     q = dsub.add_parser("fingerprint", help="show this installation's bundle signing key")
@@ -218,7 +220,7 @@ def cmd_export(args: argparse.Namespace) -> int:
 def cmd_import(args: argparse.Namespace) -> int:
     updater = _updater()
     try:
-        result = bundle.import_bundle(args.file, updater, trust=args.trust)
+        result = bundle.import_bundle(args.file, updater, trust=args.trust, allow_older=args.allow_older)
     except bundle.UntrustedKey as exc:
         print(f"The bundle is signed by {bundle.format_fingerprint(exc.fingerprint)}.")
         print("Compare this with 'defs fingerprint' on the machine that exported it.")
@@ -229,7 +231,14 @@ def cmd_import(args: argparse.Namespace) -> int:
             if input("Trust this key? [y/N] ").strip().lower() not in ("y", "yes"):
                 return 2
         bundle.trust_key(exc.fingerprint, str(args.file.name))
-        result = bundle.import_bundle(args.file, updater)
+        try:
+            result = bundle.import_bundle(args.file, updater, allow_older=args.allow_older)
+        except bundle.BundleError as again:
+            print(f"error: {again}", file=sys.stderr)
+            return 2
+    except bundle.OlderBundle as exc:
+        print(f"error: {exc} (--allow-older)", file=sys.stderr)
+        return 2
     except bundle.BundleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

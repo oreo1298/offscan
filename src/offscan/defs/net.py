@@ -9,7 +9,10 @@
   re-downloading unchanged files.
 * HTTP 429/503 with Retry-After raise :class:`RateLimited` so the caller can
   record a cool-down instead of retrying.
-* API keys that appear in URLs are registered with the log redactor.
+* API keys that appear in URLs are registered with the log redactor; keys
+  sent in headers are never repeated to the host of a redirect.
+* Every download has an overall deadline (a server sending a byte a minute
+  cannot hold the update forever) and can be cancelled mid-file.
 
 No telemetry: nothing is sent except the request for the file itself.
 """
@@ -21,6 +24,7 @@ import hashlib
 import os
 import ssl
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -92,10 +96,18 @@ class Session:
 
     def fetch(self, url: str, dest_dir: Path, *, max_size: int, etag: str | None = None,
               last_modified: str | None = None, allow_http: bool = False,
-              headers: dict[str, str] | None = None) -> Download:
-        """Download ``url`` into a new file in ``dest_dir``; raises NotModified."""
+              headers: dict[str, str] | None = None, cancel: threading.Event | None = None,
+              deadline: float | None = None) -> Download:
+        """Download ``url`` into a new file in ``dest_dir``; raises NotModified.
+
+        ``deadline`` is the most seconds the whole download may take (default:
+        an hour plus a second per MiB of ``max_size``).
+        """
         self._check_url(url, allow_http)
-        request = urllib.request.Request(url, headers=dict(headers or {}))  # noqa: S310 (checked above)
+        end = time.monotonic() + (deadline if deadline is not None else 3600 + max_size / (1 << 20))
+        request = urllib.request.Request(url)  # noqa: S310 (scheme checked above)
+        for key, value in (headers or {}).items():
+            request.add_unredirected_header(key, value)     # credentials stay with this host
         if etag:
             request.add_header("If-None-Match", etag)
         if last_modified:
@@ -130,6 +142,10 @@ class Session:
             try:
                 with os.fdopen(fd, "wb") as out:
                     while True:
+                        if cancel is not None and cancel.is_set():
+                            raise DownloadError("cancelled")
+                        if time.monotonic() > end:
+                            raise DownloadError("the download is too slow; try again later")
                         chunk = response.read(CHUNK)
                         if not chunk:
                             break
