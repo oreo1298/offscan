@@ -200,12 +200,23 @@ def collect(root: RootFS, home_volume: bool = False) -> tuple[dict[str, Any], li
             "pack": 0, "index": index, "truncated": pack.full, "home_volume": home_volume,
             "users": [{"name": names.to_wire(u["name"]), "uid": u["uid"], "home": names.to_wire(u["home"]),
                        "login": u["login"]} for u in users],
+            "system_uid": _system_uid(root),
             "odd": [] if home_volume else _odd_names(root),
             "temp_exec": [] if home_volume else _temp_executables(root),
         }
         return args, [os.dup(fd)]
     finally:
         pack.close()
+
+
+def _system_uid(root: RootFS) -> int:
+    """Who owns the installation's system files: 0, or a mapped id for rootless images."""
+    for path in ("/etc", "/"):
+        try:
+            return root.lstat(path).st_uid
+        except OSError:
+            continue
+    return 0
 
 
 def _odd_names(root: RootFS) -> list[dict[str, Any]]:
@@ -292,6 +303,7 @@ class _Ctx:
         self.errors: list[str] = []
         self.info: dict[str, Any] = {}
         self.users = {u["name"]: u for u in users}
+        self.system_uid = 0             # owner of the installation's /etc (0 unless id-mapped)
 
     def add(self, finding: Finding, report_info: bool = True) -> None:
         if finding.target:
@@ -359,12 +371,12 @@ def _lines(data: bytes) -> list[tuple[int, str]]:
     return out
 
 
-def _unsafe_owner(entry: dict[str, Any]) -> bool:
-    """World-writable, or (for system-wide files) not owned by root."""
+def _unsafe_owner(entry: dict[str, Any], system_uid: int = 0) -> bool:
+    """World-writable, or (for system-wide files) not owned by the installation's root."""
     mode = int(entry.get("mode", 0))
     if entry.get("kind") == "crontab":           # per-user crontabs belong to their user
         return bool(mode & 0o002)
-    return bool(mode & 0o002) or entry.get("uid") not in (0, None)
+    return bool(mode & 0o002) or entry.get("uid") not in (system_uid, None)
 
 
 ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*=")
@@ -372,9 +384,9 @@ ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*=")
 
 def analyze_cron(entry: dict[str, Any], data: bytes, ctx: _Ctx) -> None:
     file, kind = entry["file"], entry["kind"]
-    if _unsafe_owner(entry):
+    if _unsafe_owner(entry, ctx.system_uid):
         mode = oct(int(entry.get("mode", 0)))
-        ctx.add(Finding("linux.cron", "Cron file writable by other users", file, mode, "high",
+        ctx.add(Finding("linux.cron", "Cron file not owned by root or writable by others", file, mode, "high",
                         ["a non-root user could add commands that run as root"], file, None, None,
                         "T1053.003"))
     owner = file.rsplit("/", 1)[-1] if kind == "crontab" else None
@@ -660,7 +672,7 @@ def analyze_accounts(passwd: bytes | None, shadow: bytes | None, group: bytes | 
 
 def analyze_sudoers(entry: dict[str, Any], data: bytes, ctx: _Ctx) -> None:
     file = entry["file"]
-    if int(entry.get("mode", 0)) & 0o022 or entry.get("uid") not in (0, None):
+    if int(entry.get("mode", 0)) & 0o022 or entry.get("uid") not in (ctx.system_uid, None):
         ctx.add(Finding("linux.sudo", "sudo rules file has unsafe permissions", file,
                         oct(int(entry.get("mode", 0))), "medium", ["writable by others or not owned by root"],
                         file, None, None, "T1548.003"))
@@ -841,6 +853,7 @@ def analyze_odd(args: dict[str, Any], ctx: _Ctx) -> None:
 def task_persistence(args: dict[str, Any], fds: list[int]) -> dict[str, Any]:
     """Sandbox entry point (see offscan.sandbox.TASKS)."""
     ctx = _Ctx(args.get("users", []))
+    ctx.system_uid = int(args.get("system_uid", 0))
     by_kind: dict[str, list[tuple[dict[str, Any], bytes]]] = {}
     for entry, data in filepack.entries(fds[args["pack"]], args["index"]):
         by_kind.setdefault(entry["kind"], []).append((entry, data))
