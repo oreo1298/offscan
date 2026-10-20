@@ -16,7 +16,7 @@ from __future__ import annotations
 NAME = "offscan"
 DISPLAY_NAME = "Offscan"
 APP_ID = "io.github.oreo1298.offscan"
-VERSION = "0.1.0"
+VERSION = "0.1.1.dev0"
 SUMMARY = "Offline drive malware scanner"
 DESCRIPTION = (
     "Scans the drives of Windows and Linux installations that are not "

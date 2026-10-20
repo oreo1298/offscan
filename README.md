@@ -70,12 +70,19 @@ sudo zypper install --allow-unsigned-rpm ./offscan-0.1.0-1.opensuse.x86_64.rpm
 
 ### Arch Linux, Manjaro, EndeavourOS
 
-From the AUR (once 0.1.0 is released):
+From the AUR, once the package is published there:
 
 ```sh
 git clone https://aur.archlinux.org/offscan.git
 cd offscan
 makepkg -si                     # or: yay -S offscan / paru -S offscan
+```
+
+Until then, use the same PKGBUILD from the releases page:
+
+```sh
+mkdir offscan-aur && tar -xzf offscan-0.1.0-aur.tar.gz -C offscan-aur
+cd offscan-aur && makepkg -si
 ```
 
 The PKGBUILD builds the package from the release tarball. It adds the pinned YARA-X and
